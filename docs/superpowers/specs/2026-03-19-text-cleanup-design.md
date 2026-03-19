@@ -20,6 +20,7 @@ New:      Audio → WhisperKit transcribe → [if cleanup on] → MLX cleanup �
 
 Manages the MLX model lifecycle. Analogous to `ModelManager` for WhisperKit.
 
+- File: `WhisperCat/Cleanup/TextCleanupManager.swift`
 - Loads Qwen 2.5 1.5B MLX model from Hugging Face on first use (~1GB download)
 - Keeps model resident in memory while cleanup is enabled
 - Unloads model when cleanup is toggled off (frees ~1GB RAM)
@@ -30,6 +31,7 @@ Manages the MLX model lifecycle. Analogous to `ModelManager` for WhisperKit.
 
 Performs the actual text cleanup using the loaded model.
 
+- File: `WhisperCat/Cleanup/TextCleaner.swift`
 - Accepts raw transcription `String`
 - Sends text to MLX model with a system prompt
 - Returns cleaned `String?`
@@ -53,7 +55,7 @@ Add to menu bar dropdown:
 
 ### AppState Changes
 
-- Add `cleanupEnabled: Bool` property (default `true`)
+- Add `cleanupEnabled: Bool` property (default `true`), persisted via `@AppStorage("cleanupEnabled")`
 - Add `textCleanupManager: TextCleanupManager`
 - Add `textCleaner: TextCleaner`
 - In `initialize()`: if cleanup enabled, load the cleanup model after WhisperKit model loads
@@ -65,9 +67,9 @@ Add to menu bar dropdown:
 
 ## Dependencies
 
-- **mlx-swift** — Apple's MLX framework Swift bindings via SPM
-- **mlx-swift-examples/LLM** — MLX community LLM inference utilities (provides tokenizer, generation pipeline)
+- **mlx-swift-lm** — MLX LLM inference library for Swift (includes tokenizer, generation pipeline). SPM: `https://github.com/ml-explore/mlx-swift-lm.git`
 - **Model:** `mlx-community/Qwen2.5-1.5B-Instruct-4bit` (~1GB) from Hugging Face
+- **project.yml update:** Add `mlx-swift-lm` as an SPM package dependency and link it to the WhisperCat target
 
 ## Performance
 
