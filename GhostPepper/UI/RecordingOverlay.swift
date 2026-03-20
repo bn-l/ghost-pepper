@@ -113,19 +113,18 @@ struct OverlayPillView: View {
     }
 
     private func loadSpriteFrame(_ index: Int) -> NSImage {
-        // Try @2x first for retina
-        let name2x = "sprite_frame_\(index)@2x"
-        let name1x = "sprite_frame_\(index)"
-
-        if let path = Bundle.main.path(forResource: name2x, ofType: "png"),
-           let image = NSImage(contentsOfFile: path) {
+        let name = "sprite_frame_\(index)"
+        // Try common formats — Xcode may convert PNGs to TIFFs
+        for ext in ["png", "tiff", "tif"] {
+            if let path = Bundle.main.path(forResource: name, ofType: ext),
+               let image = NSImage(contentsOfFile: path) {
+                return image
+            }
+        }
+        // Try NSImage(named:) which checks the asset catalog
+        if let image = NSImage(named: name) {
             return image
         }
-        if let path = Bundle.main.path(forResource: name1x, ofType: "png"),
-           let image = NSImage(contentsOfFile: path) {
-            return image
-        }
-        // Fallback: orange circle
         return NSImage()
     }
 }
