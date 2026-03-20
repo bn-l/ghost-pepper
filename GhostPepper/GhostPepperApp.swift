@@ -22,7 +22,7 @@ struct GhostPepperApp: App {
     private var menuBarIconName: String {
         switch appState.status {
         case .loading:
-            return "arrow.down.circle"
+            return "ellipsis.circle"
         case .recording:
             return "waveform.circle.fill"
         case .error:
