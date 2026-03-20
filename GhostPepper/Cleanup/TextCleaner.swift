@@ -38,7 +38,8 @@ final class TextCleaner {
 
     @MainActor
     func clean(text: String, prompt: String? = nil) async -> String {
-        guard let llm = cleanupManager.llm else { return text }
+        let wordCount = text.split(separator: " ").count
+        guard let llm = cleanupManager.model(for: wordCount) else { return text }
 
         // Update template with current prompt
         let activePrompt = prompt ?? Self.defaultPrompt

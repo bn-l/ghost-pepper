@@ -4,6 +4,55 @@ import AppKit
 import AVFoundation
 import CoreAudio
 
+// MARK: - Mic Level Monitor
+
+@MainActor
+class MicLevelMonitor: ObservableObject {
+    @Published var level: Float = 0
+    private var engine: AVAudioEngine?
+    private var isRunning = false
+
+    func start() {
+        guard !isRunning else { return }
+        let engine = AVAudioEngine()
+        let inputNode = engine.inputNode
+        let format = inputNode.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { return }
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+            guard let channelData = buffer.floatChannelData else { return }
+            let frames = Int(buffer.frameLength)
+            var sum: Float = 0
+            for i in 0..<frames {
+                let sample = channelData[0][i]
+                sum += sample * sample
+            }
+            let rms = sqrtf(sum / Float(max(frames, 1)))
+            // Normalize to 0-1 range (RMS of speech is typically 0.01-0.1)
+            let normalized = min(rms * 10, 1.0)
+            Task { @MainActor [weak self] in
+                self?.level = normalized
+            }
+        }
+
+        do {
+            try engine.start()
+            self.engine = engine
+            isRunning = true
+        } catch {
+            // Silently fail — mic level is not critical
+        }
+    }
+
+    func stop() {
+        engine?.inputNode.removeTap(onBus: 0)
+        engine?.stop()
+        engine = nil
+        isRunning = false
+        level = 0
+    }
+}
+
 // MARK: - Window Controller
 
 class OnboardingWindowController {
@@ -135,6 +184,7 @@ struct SetupStep: View {
     @State private var modelLoadStarted = false
     @State private var inputDevices: [AudioInputDevice] = []
     @State private var selectedDeviceID: AudioDeviceID = 0
+    @StateObject private var micLevel = MicLevelMonitor()
 
     private var allComplete: Bool {
         micGranted && accessibilityGranted && modelManager.isReady

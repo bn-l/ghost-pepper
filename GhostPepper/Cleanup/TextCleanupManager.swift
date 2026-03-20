@@ -14,13 +14,28 @@ final class TextCleanupManager: ObservableObject {
     @Published private(set) var state: CleanupModelState = .idle
     @Published private(set) var errorMessage: String?
 
-    private(set) var llm: LLM?
+    /// Fast model for short inputs (< 15 words)
+    private(set) var fastLLM: LLM?
+    /// Full model for longer inputs
+    private(set) var fullLLM: LLM?
 
-    private static let modelFileName = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
-    private static let modelURL = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
-    private static let modelSizeMB = "~1 GB"
+    private static let fastModelFileName = "Qwen2.5-1.5B-Instruct-Q4_K_M.gguf"
+    private static let fastModelURL = "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+
+    private static let fullModelFileName = "Qwen2.5-3B-Instruct-Q4_K_M.gguf"
+    private static let fullModelURL = "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf"
+
+    static let shortInputThreshold = 15
 
     var isReady: Bool { state == .ready }
+
+    /// Returns the appropriate model based on word count.
+    func model(for wordCount: Int) -> LLM? {
+        if wordCount <= Self.shortInputThreshold {
+            return fastLLM ?? fullLLM
+        }
+        return fullLLM
+    }
 
     var statusText: String {
         switch state {
@@ -28,9 +43,9 @@ final class TextCleanupManager: ObservableObject {
             return ""
         case .downloading(let progress):
             let pct = Int(progress * 100)
-            return "Downloading cleanup model (\(pct)%)..."
+            return "Downloading cleanup models (\(pct)%)..."
         case .loadingModel:
-            return "Loading cleanup model into memory..."
+            return "Loading cleanup models..."
         case .ready:
             return ""
         case .error:
@@ -43,21 +58,32 @@ final class TextCleanupManager: ObservableObject {
         return appSupport.appendingPathComponent("GhostPepper/models", isDirectory: true)
     }
 
-    private var modelPath: URL {
-        modelsDirectory.appendingPathComponent(Self.modelFileName)
+    private func modelPath(for fileName: String) -> URL {
+        modelsDirectory.appendingPathComponent(fileName)
     }
 
     func loadModel() async {
         guard state == .idle || state == .error else { return }
 
         errorMessage = nil
-
         try? FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
 
-        if !FileManager.default.fileExists(atPath: modelPath.path) {
+        // Download both models if needed
+        let fastPath = modelPath(for: Self.fastModelFileName)
+        let fullPath = modelPath(for: Self.fullModelFileName)
+
+        let needsFast = !FileManager.default.fileExists(atPath: fastPath.path)
+        let needsFull = !FileManager.default.fileExists(atPath: fullPath.path)
+
+        if needsFast || needsFull {
             state = .downloading(progress: 0)
             do {
-                try await downloadModel()
+                if needsFast {
+                    try await downloadModel(url: Self.fastModelURL, to: fastPath, progressOffset: 0, progressScale: needsFull ? 0.33 : 1.0)
+                }
+                if needsFull {
+                    try await downloadModel(url: Self.fullModelURL, to: fullPath, progressOffset: needsFast ? 0.33 : 0, progressScale: needsFast ? 0.67 : 1.0)
+                }
             } catch {
                 self.errorMessage = "Failed to download cleanup model: \(error.localizedDescription)"
                 self.state = .error
@@ -67,46 +93,57 @@ final class TextCleanupManager: ObservableObject {
 
         state = .loadingModel
 
-        // Load on background thread to avoid blocking UI
-        let path = modelPath
-        let model = await Task.detached { () -> LLM? in
-            return LLM(from: path, template: Template.chatML(TextCleaner.defaultPrompt), maxTokenCount: 4096)
+        // Load fast model first (smaller, quicker to load)
+        let fast = await Task.detached { () -> LLM? in
+            return LLM(from: fastPath, template: Template.chatML(TextCleaner.defaultPrompt), maxTokenCount: 2048)
         }.value
 
-        guard let model = model else {
+        if let fast = fast {
+            fast.temp = 0.1
+            fast.update = { (_: String?) in }
+            fast.postprocess = { (_: String) in }
+            self.fastLLM = fast
+        }
+
+        // Load full model
+        let full = await Task.detached { () -> LLM? in
+            return LLM(from: fullPath, template: Template.chatML(TextCleaner.defaultPrompt), maxTokenCount: 4096)
+        }.value
+
+        guard let full = full else {
             self.errorMessage = "Failed to load cleanup model"
             self.state = .error
             return
         }
 
-        model.temp = 0.1
-        model.update = { (_: String?) in }
-        model.postprocess = { (_: String) in }
-
-        self.llm = model
+        full.temp = 0.1
+        full.update = { (_: String?) in }
+        full.postprocess = { (_: String) in }
+        self.fullLLM = full
         self.state = .ready
     }
 
     func unloadModel() {
-        llm = nil
+        fastLLM = nil
+        fullLLM = nil
         state = .idle
         errorMessage = nil
     }
 
-    private func downloadModel() async throws {
-        guard let url = URL(string: Self.modelURL) else {
+    private func downloadModel(url urlString: String, to destination: URL, progressOffset: Double, progressScale: Double) async throws {
+        guard let url = URL(string: urlString) else {
             throw URLError(.badURL)
         }
 
         let delegate = DownloadProgressDelegate { [weak self] progress in
             Task { @MainActor in
-                self?.state = .downloading(progress: progress)
+                self?.state = .downloading(progress: progressOffset + progress * progressScale)
             }
         }
 
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         let (tempURL, _) = try await session.download(from: url)
-        try FileManager.default.moveItem(at: tempURL, to: modelPath)
+        try FileManager.default.moveItem(at: tempURL, to: destination)
     }
 }
 

@@ -136,8 +136,7 @@ class AppState: ObservableObject {
 
         if let text = await transcriber.transcribe(audioBuffer: buffer) {
             let finalText: String
-            let wordCount = text.split(separator: " ").count
-            if cleanupEnabled && textCleanupManager.isReady && wordCount > 5 {
+            if cleanupEnabled && textCleanupManager.isReady {
                 status = .cleaningUp
                 overlay.show(message: .cleaningUp)
                 finalText = await textCleaner.clean(text: text, prompt: cleanupPrompt)
