@@ -58,7 +58,9 @@ class AppState: ObservableObject {
         audioRecorder.prewarm()
 
         status = .loading
+        overlay.show(message: .modelLoading)
         await modelManager.loadModel()
+        overlay.dismiss()
 
         guard modelManager.isReady else {
             errorMessage = "Failed to load whisper model: \(modelManager.error?.localizedDescription ?? "unknown error")"

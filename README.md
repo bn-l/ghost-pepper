@@ -2,6 +2,12 @@
 
 A macOS menu bar app for system-wide hold-to-talk speech-to-text. Hold the Control key to record, release to transcribe and paste into any text field. Runs 100% locally — no cloud APIs, no data leaves your machine.
 
+## Download
+
+**[Download GhostPepper.dmg](https://github.com/matthartman/ghost-pepper/releases/latest/download/GhostPepper.dmg)** — Open the DMG and drag Ghost Pepper to your Applications folder.
+
+> Requires macOS 14.0+ and Apple Silicon (M1 or later).
+
 ## Features
 
 - **Hold-to-talk** — Hold Control to record, release to transcribe and paste
