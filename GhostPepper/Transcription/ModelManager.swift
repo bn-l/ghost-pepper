@@ -34,8 +34,13 @@ final class ModelManager: ObservableObject {
         error = nil
 
         do {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            let modelsDir = appSupport.appendingPathComponent("GhostPepper/whisper-models", isDirectory: true)
+            try? FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
+
             let config = WhisperKitConfig(
                 model: modelName,
+                downloadBase: modelsDir,
                 verbose: false,
                 logLevel: .error,
                 prewarm: false,
