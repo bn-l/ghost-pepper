@@ -14,6 +14,8 @@ class MicLevelMonitor: ObservableObject {
 
     func start() {
         guard !isRunning else { return }
+        // Only start if mic permission is already granted
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -61,6 +63,9 @@ class OnboardingWindowController {
     func show(appState: AppState, onComplete: @escaping () -> Void) {
         dismiss()
 
+        // Temporarily show in dock/Cmd+Tab during onboarding
+        NSApp.setActivationPolicy(.regular)
+
         let onboardingView = OnboardingView(appState: appState, onComplete: { [weak self] in
             self?.dismiss()
             onComplete()
@@ -85,6 +90,8 @@ class OnboardingWindowController {
     func dismiss() {
         window?.close()
         window = nil
+        // Hide from dock/Cmd+Tab again
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 
