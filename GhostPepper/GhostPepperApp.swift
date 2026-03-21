@@ -1,27 +1,34 @@
 import SwiftUI
 import Combine
 
+// Wrapper to delay Sparkle initialization until NSApp exists
+class LazyUpdaterController {
+    lazy var controller = UpdaterController()
+}
+
 @main
 struct GhostPepperApp: App {
     @StateObject private var appState = AppState()
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
     @State private var hasInitialized = false
     private let onboardingController = OnboardingWindowController()
-    private let updaterController = UpdaterController()
+    private let lazyUpdater = LazyUpdaterController()
 
     init() {
-        // Set activation policy immediately at launch
-        let completed = UserDefaults.standard.bool(forKey: "onboardingCompleted")
-        if completed {
-            NSApp.setActivationPolicy(.accessory)
-        } else {
-            NSApp.setActivationPolicy(.regular)
+        // Set activation policy after NSApp is ready
+        DispatchQueue.main.async {
+            let completed = UserDefaults.standard.bool(forKey: "onboardingCompleted")
+            if completed {
+                NSApp.setActivationPolicy(.accessory)
+            } else {
+                NSApp.setActivationPolicy(.regular)
+            }
         }
     }
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(appState: appState, updaterController: updaterController)
+            MenuBarView(appState: appState, updaterController: lazyUpdater.controller)
         } label: {
             Group {
                 switch appState.status {
