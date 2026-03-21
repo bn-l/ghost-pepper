@@ -46,6 +46,18 @@ Models are served by [Hugging Face](https://huggingface.co/) and cached locally 
 | Microphone | Record your voice |
 | Accessibility | Global hotkey and paste via simulated keystrokes |
 
+## Enterprise / managed devices
+
+Ghost Pepper requires Accessibility permission, which normally needs admin access to grant. On managed devices, IT admins can pre-approve this via an MDM profile (Jamf, Kandji, Mosaic, etc.) using a Privacy Preferences Policy Control (PPPC) payload:
+
+| Field | Value |
+|---|---|
+| Bundle ID | `com.github.matthartman.ghostpepper` |
+| Team ID | `BBVMGXR9AY` |
+| Permission | Accessibility (`com.apple.security.accessibility`) |
+
+This allows users to run Ghost Pepper without needing admin access.
+
 ## Acknowledgments
 
 Built with [WhisperKit](https://github.com/argmaxinc/WhisperKit), [LLM.swift](https://github.com/eastriverlee/LLM.swift), [Hugging Face](https://huggingface.co/), and [Sparkle](https://sparkle-project.org/).
