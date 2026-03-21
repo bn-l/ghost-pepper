@@ -5,30 +5,46 @@ import ServiceManagement
 struct MenuBarView: View {
     @ObservedObject var appState: AppState
     let updaterController: UpdaterController
-    @State private var inputDevices: [AudioInputDevice] = []
-    @State private var selectedDeviceID: AudioDeviceID = 0
-    @State private var showingPromptEditor = false
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
-    private let promptEditor = PromptEditorController()
+    private let settingsController = SettingsWindowController()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(appState.status.rawValue)
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 2) {
+            Button("Settings...") {
+                settingsController.show(appState: appState)
+            }
+
+            Text("Ghost Pepper v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 2)
+
+            if let statusText = statusLine {
+                Text(statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 2)
+            }
+
+            if case .downloading(let progress) = appState.textCleanupManager.state {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .padding(.horizontal, 14)
+            }
 
             if let error = appState.errorMessage {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
+                    .padding(.horizontal, 14)
 
                 if error.contains("Accessibility") {
                     Button("Open Accessibility Settings") {
                         PermissionChecker.openAccessibilitySettings()
                     }
                     Button("Retry") {
-                        Task {
-                            await appState.startHotkeyMonitor()
-                        }
+                        Task { await appState.startHotkeyMonitor() }
                     }
                 }
                 if error.contains("Microphone") {
@@ -40,109 +56,34 @@ struct MenuBarView: View {
 
             Divider()
 
-            Picker("Input Device", selection: $selectedDeviceID) {
-                ForEach(inputDevices) { device in
-                    Text(device.name).tag(device.id)
-                }
-            }
-            .onChange(of: selectedDeviceID) { _, newValue in
-                AudioDeviceManager.setDefaultInputDevice(newValue)
-            }
-
-            Divider()
-
-            Toggle("Cleanup", isOn: $appState.cleanupEnabled)
-                .onChange(of: appState.cleanupEnabled) { _, enabled in
-                    Task {
-                        if enabled {
-                            await appState.textCleanupManager.loadModel()
-                        } else {
-                            appState.textCleanupManager.unloadModel()
-                        }
-                    }
-                }
-
-            if appState.cleanupEnabled {
-                let statusText = appState.textCleanupManager.statusText
-                if !statusText.isEmpty {
-                    if case .downloading(let progress) = appState.textCleanupManager.state {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(statusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            ProgressView(value: progress)
-                                .progressViewStyle(.linear)
-                        }
-                    } else if appState.textCleanupManager.state == .error {
-                        Text(statusText)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    } else {
-                        Text(statusText)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Button("Edit Cleanup Prompt...") {
-                    promptEditor.show(appState: appState)
-                }
-            }
-
-            Divider()
-
-            Toggle("Launch at Login", isOn: $launchAtLogin)
-                .onChange(of: launchAtLogin) { _, enabled in
-                    do {
-                        if enabled {
-                            try SMAppService.mainApp.register()
-                        } else {
-                            try SMAppService.mainApp.unregister()
-                        }
-                    } catch {
-                        launchAtLogin = !enabled // revert on failure
-                    }
-                }
-
-            Button("Check for Updates...") {
+            Button("Check for Updates") {
                 updaterController.checkForUpdates()
             }
 
-            Button("Restart Ghost Pepper") {
-                restartApp()
-            }
+            Divider()
 
-            Button("Quit Ghost Pepper") {
+            Button("Quit") {
                 NSApplication.shared.terminate(nil)
             }
             .keyboardShortcut("q")
         }
-        .padding(8)
-        .onAppear {
-            refreshDevices()
-        }
+        .padding(.vertical, 4)
     }
 
-    private func refreshDevices() {
-        inputDevices = AudioDeviceManager.listInputDevices()
-        selectedDeviceID = AudioDeviceManager.defaultInputDeviceID() ?? 0
-    }
-
-    private func selectDevice(_ device: AudioInputDevice) {
-        if AudioDeviceManager.setDefaultInputDevice(device.id) {
-            selectedDeviceID = device.id
-        }
-    }
-
-    private func restartApp() {
-        let url = Bundle.main.bundleURL
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        task.arguments = ["-n", url.path]
-        try? task.run()
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            NSApplication.shared.terminate(nil)
+    private var statusLine: String? {
+        switch appState.status {
+        case .ready:
+            return nil
+        case .loading:
+            return "Loading..."
+        case .recording:
+            return "Recording..."
+        case .transcribing:
+            return "Transcribing..."
+        case .cleaningUp:
+            return "Cleaning up..."
+        case .error:
+            return nil
         }
     }
 }
