@@ -313,12 +313,13 @@ struct SetupStep: View {
                         ? "Download failed"
                         : modelManager.isReady
                             ? "Ready"
-                            : "Downloading...",
+                            : "Downloading & compiling (may take a few minutes)...",
                     isComplete: modelManager.isReady
                 ) {
                     if modelManager.state == .loading {
                         ProgressView()
-                            .controlSize(.small)
+                            .progressViewStyle(.linear)
+                            .frame(width: 60)
                     } else if modelManager.state == .error {
                         Button("Retry") {
                             Task { await modelManager.loadModel() }
