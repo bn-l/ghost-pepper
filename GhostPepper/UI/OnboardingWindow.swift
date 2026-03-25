@@ -315,6 +315,14 @@ struct SetupStep: View {
                 ) {
                     if !screenRecordingPermission.isGranted {
                         Button("Grant") {
+                            // Schedule relaunch in case macOS kills us after granting
+                            let appURL = Bundle.main.bundleURL
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                                let task = Process()
+                                task.executableURL = URL(fileURLWithPath: "/bin/sh")
+                                task.arguments = ["-c", "sleep 3 && open \"\(appURL.path)\""]
+                                try? task.run()
+                            }
                             screenRecordingPermission.requestAccess()
                             PermissionChecker.openScreenRecordingSettings()
                         }
