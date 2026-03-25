@@ -45,6 +45,11 @@ private final class FakeAppRelauncher: AppRelaunching {
 
 @MainActor
 final class GhostPepperTests: XCTestCase {
+    override func tearDown() {
+        PermissionChecker.current = PermissionChecker.defaultClient
+        super.tearDown()
+    }
+
     func testAppStateInitialStatus() {
         // AppState is @MainActor so we test basic enum
         XCTAssertEqual(AppStatus.ready.rawValue, "Ready")
@@ -740,5 +745,34 @@ final class GhostPepperTests: XCTestCase {
                 window.orderOut(nil)
                 window.close()
             }
+    }
+
+    func testCheckMicrophoneUsesInjectedClientWithoutSystemPrompt() async {
+        var requestCount = 0
+        PermissionChecker.current = PermissionChecker.Client(
+            checkAccessibility: { false },
+            promptAccessibility: {},
+            microphoneStatus: { .notDetermined },
+            requestMicrophoneAccess: {
+                requestCount += 1
+                return true
+            },
+            openAccessibilitySettings: {},
+            openMicrophoneSettings: {}
+        )
+
+        let granted = await PermissionChecker.checkMicrophone()
+
+        XCTAssertTrue(granted)
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testDefaultClientIsNonInteractiveDuringTests() async {
+        PermissionChecker.current = PermissionChecker.defaultClient
+
+        let granted = await PermissionChecker.checkMicrophone()
+
+        XCTAssertFalse(granted)
+        XCTAssertEqual(PermissionChecker.microphoneStatus(), .denied)
     }
 }

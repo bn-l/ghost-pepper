@@ -55,7 +55,7 @@ class SettingsMicMonitor: ObservableObject, MicLevelMonitoring {
 
     func start() {
         guard !isRunning else { return }
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        guard PermissionChecker.microphoneStatus() == .authorized else { return }
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
