@@ -37,7 +37,7 @@ class AppState: ObservableObject {
     }
     @AppStorage("cleanupEnabled") var cleanupEnabled: Bool = true
     @AppStorage("cleanupPrompt") var cleanupPrompt: String = TextCleaner.defaultPrompt
-    @AppStorage("whisperModel") var whisperModel: String = "openai_whisper-small.en"
+    @AppStorage("speechModel") var speechModel: String = SpeechModelCatalog.defaultModelID
     @Published private(set) var pushToTalkChord: KeyChord
     @Published private(set) var toggleToTalkChord: KeyChord
     @Published var postPasteLearningEnabled: Bool {
@@ -51,8 +51,8 @@ class AppState: ObservableObject {
     }
 
     let modelManager = ModelManager()
-    let audioRecorder = AudioRecorder()
-    let transcriber: WhisperTranscriber
+    let audioRecorder: AudioRecorder
+    let transcriber: SpeechTranscriber
     let textPaster: TextPaster
     let soundEffects = SoundEffects()
     let hotkeyMonitor: HotkeyMonitoring
@@ -80,6 +80,9 @@ class AppState: ObservableObject {
     }
 
     private var cleanupStateObserver: Any? = nil
+    private let recordingOCRPrefetch: RecordingOCRPrefetch
+    private var activePerformanceTrace: PerformanceTrace?
+    private var activeCleanupAttempted = false
     private let cleanupSettingsDefaults: UserDefaults
     private let inputMonitoringChecker: () -> Bool
     private let inputMonitoringPrompter: () -> Void
@@ -114,6 +117,7 @@ class AppState: ObservableObject {
         frontmostWindowOCRService: FrontmostWindowOCRService = FrontmostWindowOCRService(),
         cleanupPromptBuilder: CleanupPromptBuilder = CleanupPromptBuilder(),
         correctionStore: CorrectionStore? = nil,
+        audioRecorder: AudioRecorder = AudioRecorder(),
         textPaster: TextPaster = TextPaster(),
         debugLogStore: DebugLogStore = DebugLogStore(),
         appRelauncher: AppRelaunching? = nil,
@@ -123,6 +127,7 @@ class AppState: ObservableObject {
         self.hotkeyMonitor = hotkeyMonitor
         self.chordBindingStore = chordBindingStore
         self.cleanupSettingsDefaults = cleanupSettingsDefaults
+        self.audioRecorder = audioRecorder
         self.textPaster = textPaster
         self.debugLogStore = debugLogStore
         self.appRelauncher = appRelauncher ?? AppRelauncher()
@@ -132,6 +137,9 @@ class AppState: ObservableObject {
         self.toggleToTalkChord = chordBindingStore.binding(for: .toggleToTalk) ?? AppState.defaultToggleToTalkChord
         self.textCleanupManager = textCleanupManager ?? TextCleanupManager(defaults: cleanupSettingsDefaults)
         self.frontmostWindowOCRService = frontmostWindowOCRService
+        self.recordingOCRPrefetch = RecordingOCRPrefetch { [frontmostWindowOCRService] customWords in
+            await frontmostWindowOCRService.captureContext(customWords: customWords)
+        }
         self.cleanupPromptBuilder = cleanupPromptBuilder
         self.correctionStore = correctionStore ?? CorrectionStore(defaults: cleanupSettingsDefaults)
         let storedCleanupBackend = CleanupBackendOption(
@@ -151,7 +159,7 @@ class AppState: ObservableObject {
         self.cleanupBackend = storedCleanupBackend
         self.frontmostWindowContextEnabled = storedFrontmostWindowContextEnabled
         self.postPasteLearningEnabled = storedPostPasteLearningEnabled
-        self.transcriber = WhisperTranscriber(modelManager: modelManager)
+        self.transcriber = SpeechTranscriber(modelManager: modelManager)
         self.textCleaner = TextCleaner(
             cleanupManager: self.textCleanupManager,
             correctionStore: self.correctionStore
@@ -186,6 +194,26 @@ class AppState: ObservableObject {
         hotkeyMonitor.updateBindings(shortcutBindings)
         self.textPaster.onPaste = { [postPasteLearningCoordinator = self.postPasteLearningCoordinator] session in
             postPasteLearningCoordinator.handlePaste(session)
+        }
+        self.audioRecorder.onRecordingStarted = { [weak self] in
+            Task { @MainActor in
+                self?.activePerformanceTrace?.micLiveAt = Date()
+            }
+        }
+        self.audioRecorder.onRecordingStopped = { [weak self] in
+            Task { @MainActor in
+                self?.activePerformanceTrace?.micColdAt = Date()
+            }
+        }
+        self.textPaster.onPasteStart = { [weak self] in
+            Task { @MainActor in
+                self?.activePerformanceTrace?.pasteStartAt = Date()
+            }
+        }
+        self.textPaster.onPasteEnd = { [weak self] in
+            Task { @MainActor in
+                self?.completeActivePerformanceTraceIfNeeded()
+            }
         }
         self.postPasteLearningCoordinator.onLearnedCorrection = { [weak overlay] replacement in
             Task { @MainActor in
@@ -240,14 +268,14 @@ class AppState: ObservableObject {
         }
         debugLogStore.record(category: .model, message: "App initialization started.")
         if !modelManager.isReady {
-            await modelManager.loadModel(name: whisperModel)
+            await modelManager.loadModel(name: speechModel)
         }
         if showOverlay {
             overlay.dismiss()
         }
 
         guard modelManager.isReady else {
-            errorMessage = "Failed to load whisper model: \(modelManager.error?.localizedDescription ?? "unknown error")"
+            errorMessage = "Failed to load speech model: \(modelManager.error?.localizedDescription ?? "unknown error")"
             status = .error
             return
         }
@@ -271,21 +299,25 @@ class AppState: ObservableObject {
 
         hotkeyMonitor.onPushToTalkStart = { [weak self] in
             Task { @MainActor in
+                self?.beginPerformanceTrace()
                 self?.startRecording()
             }
         }
         hotkeyMonitor.onPushToTalkStop = { [weak self] in
             Task { @MainActor in
+                self?.activePerformanceTrace?.hotkeyLiftedAt = Date()
                 await self?.stopRecordingAndTranscribe()
             }
         }
         hotkeyMonitor.onToggleToTalkStart = { [weak self] in
             Task { @MainActor in
+                self?.beginPerformanceTrace()
                 self?.startRecording()
             }
         }
         hotkeyMonitor.onToggleToTalkStop = { [weak self] in
             Task { @MainActor in
+                self?.activePerformanceTrace?.hotkeyLiftedAt = Date()
                 await self?.stopRecordingAndTranscribe()
             }
         }
@@ -321,7 +353,7 @@ class AppState: ObservableObject {
     }
 
     private func startRecording() {
-        // If whisper model isn't ready, show loading message
+        // If the selected speech model isn't ready, show loading message
         guard status == .ready else {
             if status == .loading {
                 overlay.show(message: .modelLoading)
@@ -332,7 +364,16 @@ class AppState: ObservableObject {
             return
         }
 
+        if activePerformanceTrace == nil {
+            beginPerformanceTrace()
+        }
+
         do {
+            if cleanupEnabled && canAttemptCleanup && frontmostWindowContextEnabled {
+                recordingOCRPrefetch.start(customWords: ocrCustomWords)
+            } else {
+                recordingOCRPrefetch.cancel()
+            }
             try audioRecorder.startRecording()
             debugLogStore.record(category: .hotkey, message: "Recording started.")
             soundEffects.playStart()
@@ -340,6 +381,8 @@ class AppState: ObservableObject {
             isRecording = true
             status = .recording
         } catch {
+            recordingOCRPrefetch.cancel()
+            activePerformanceTrace = nil
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
             status = .error
         }
@@ -354,15 +397,21 @@ class AppState: ObservableObject {
         isRecording = false
         status = .transcribing
         overlay.show(message: .transcribing)
+        activePerformanceTrace?.transcriptionStartAt = Date()
 
         if let text = await transcriber.transcribe(audioBuffer: buffer) {
+            activePerformanceTrace?.transcriptionEndAt = Date()
             var windowContext: OCRContext?
             if cleanupEnabled && canAttemptCleanup {
+                activeCleanupAttempted = true
+                activePerformanceTrace?.cleanupStartAt = Date()
                 status = .cleaningUp
                 overlay.show(message: .cleaningUp)
 
                 if frontmostWindowContextEnabled {
-                    windowContext = await frontmostWindowOCRService.captureContext(customWords: ocrCustomWords)
+                    let prefetchedContext = await recordingOCRPrefetch.resolve()
+                    windowContext = prefetchedContext?.context
+                    activePerformanceTrace?.ocrCaptureDuration = prefetchedContext?.elapsed
                     if windowContext == nil {
                         debugLogStore.record(category: .ocr, message: "No frontmost-window OCR context was captured.")
                     }
@@ -370,13 +419,14 @@ class AppState: ObservableObject {
             }
             let cleanupResult = await cleanedTranscriptionResult(text, windowContext: windowContext)
             let finalText = cleanupResult.text
-            let activeCleanupPrompt = cleanupResult.prompt
+            activeCleanupAttempted = cleanupResult.attemptedCleanup
+            if cleanupResult.attemptedCleanup {
+                activePerformanceTrace?.cleanupEndAt = Date()
+            }
 
             recordCleanupDebugSnapshot(
                 rawTranscription: text,
-                basePrompt: cleanupPrompt,
                 windowContext: windowContext,
-                resolvedPrompt: activeCleanupPrompt,
                 cleanedOutput: finalText,
                 attemptedCleanup: cleanupResult.attemptedCleanup
             )
@@ -384,6 +434,8 @@ class AppState: ObservableObject {
             overlay.dismiss()
             textPaster.paste(text: finalText)
         } else {
+            recordingOCRPrefetch.cancel()
+            activePerformanceTrace?.transcriptionEndAt = Date()
             switch Self.emptyTranscriptionDisposition(forAudioSampleCount: buffer.count) {
             case .cancel:
                 overlay.dismiss()
@@ -393,6 +445,7 @@ class AppState: ObservableObject {
                 debugLogStore.record(category: .model, message: "No sound detected for a long recording.")
             }
             status = .ready
+            completeActivePerformanceTraceIfNeeded()
             return
         }
 
@@ -450,6 +503,7 @@ class AppState: ObservableObject {
 
         let activeCleanupPrompt: String
         if canAttemptCleanup {
+            let promptBuildStart = Date()
             activeCleanupPrompt = cleanupPromptBuilder.buildPrompt(
                 basePrompt: cleanupPrompt,
                 windowContext: windowContext,
@@ -457,12 +511,15 @@ class AppState: ObservableObject {
                 commonlyMisheard: correctionStore.commonlyMisheard,
                 includeWindowContext: frontmostWindowContextEnabled
             )
+            activePerformanceTrace?.promptBuildDuration = Date().timeIntervalSince(promptBuildStart)
         } else {
             activeCleanupPrompt = cleanupPrompt
         }
 
-        let cleanedText = await textCleaner.clean(text: text, prompt: activeCleanupPrompt)
-        return (text: cleanedText, prompt: activeCleanupPrompt, attemptedCleanup: canAttemptCleanup)
+        let cleanedResult = await textCleaner.cleanWithPerformance(text: text, prompt: activeCleanupPrompt)
+        activePerformanceTrace?.modelCallDuration = cleanedResult.performance.modelCallDuration
+        activePerformanceTrace?.postProcessDuration = cleanedResult.performance.postProcessDuration
+        return (text: cleanedResult.text, prompt: activeCleanupPrompt, attemptedCleanup: canAttemptCleanup)
     }
 
     var ocrCustomWords: [String] {
@@ -471,13 +528,10 @@ class AppState: ObservableObject {
 
     func recordCleanupDebugSnapshot(
         rawTranscription: String,
-        basePrompt: String,
         windowContext: OCRContext?,
-        resolvedPrompt: String,
         cleanedOutput: String,
         attemptedCleanup: Bool
     ) {
-        let windowContents = windowContext?.windowContents ?? "(none)"
         debugLogStore.recordSensitive(
             category: .cleanup,
             message: """
@@ -489,34 +543,45 @@ class AppState: ObservableObject {
             category: .cleanup,
             message: "cleanupEnabled=\(cleanupEnabled) attemptedCleanup=\(attemptedCleanup) backend=\(cleanupBackend.rawValue)"
         )
+        let windowContextSummary = windowContext?.windowContents.isEmpty == false ? "captured" : "none"
         debugLogStore.recordSensitive(
             category: .cleanup,
-            message: """
-            Base cleanup prompt:
-            \(basePrompt)
-            """
+            message: "Cleanup context summary: windowContext=\(windowContextSummary)"
         )
         debugLogStore.recordSensitive(
             category: .cleanup,
-            message: """
-            OCR window contents:
-            \(windowContents)
-            """
+            message: "Final cleaned output:\n\(cleanedOutput)"
         )
-        debugLogStore.recordSensitive(
-            category: .cleanup,
-            message: """
-            Resolved cleanup prompt:
-            \(resolvedPrompt)
-            """
+    }
+
+    private func beginPerformanceTrace() {
+        var trace = PerformanceTrace(sessionID: UUID().uuidString)
+        trace.hotkeyDetectedAt = Date()
+        activePerformanceTrace = trace
+        activeCleanupAttempted = false
+    }
+
+    private func completeActivePerformanceTraceIfNeeded() {
+        guard var trace = activePerformanceTrace else {
+            return
+        }
+
+        if trace.pasteEndAt == nil {
+            trace.pasteEndAt = Date()
+        }
+
+        debugLogStore.record(
+            category: .performance,
+            message: trace.summary(
+                speechModelID: speechModel,
+                cleanupBackend: cleanupBackend,
+                cleanupAttempted: activeCleanupAttempted
+            )
         )
-        debugLogStore.recordSensitive(
-            category: .cleanup,
-            message: """
-            Final cleaned output:
-            \(cleanedOutput)
-            """
-        )
+
+        activePerformanceTrace = nil
+        activeCleanupAttempted = false
+        recordingOCRPrefetch.cancel()
     }
 
     func updateShortcut(_ chord: KeyChord, for action: ChordAction) {
@@ -558,6 +623,11 @@ class AppState: ObservableObject {
         Task {
             await refreshCleanupModelState()
         }
+    }
+
+    func prepareForTermination() {
+        recordingOCRPrefetch.cancel()
+        textCleanupManager.shutdownBackend()
     }
 
     private func refreshCleanupModelState() async {

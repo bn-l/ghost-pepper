@@ -1,6 +1,9 @@
 import AVFoundation
 
 final class AudioRecorder {
+    var onRecordingStarted: (() -> Void)?
+    var onRecordingStopped: (() -> Void)?
+
     private let engine = AVAudioEngine()
     private let bufferLock = NSLock()
 
@@ -53,6 +56,7 @@ final class AudioRecorder {
         }
 
         try engine.start()
+        onRecordingStarted?()
     }
 
     /// Stops capturing audio and returns the recorded buffer.
@@ -63,6 +67,7 @@ final class AudioRecorder {
 
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
+        onRecordingStopped?()
 
         bufferLock.lock()
         let result = audioBuffer

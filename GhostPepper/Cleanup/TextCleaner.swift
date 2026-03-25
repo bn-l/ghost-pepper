@@ -1,8 +1,21 @@
 import Foundation
 
+struct TextCleanerPerformance {
+    let modelCallDuration: TimeInterval?
+    let postProcessDuration: TimeInterval?
+}
+
+struct TextCleanerResult {
+    let text: String
+    let performance: TextCleanerPerformance
+}
+
 final class TextCleaner {
     private static let thinkBlockExpression = try? NSRegularExpression(
         pattern: #"(?is)<think\b[^>]*>.*?</think>"#
+    )
+    private static let leadingThinkTagExpression = try? NSRegularExpression(
+        pattern: #"(?is)^\s*<think\b[^>]*>"#
     )
 
     private let localBackend: CleanupBackend
@@ -56,6 +69,12 @@ final class TextCleaner {
 
     @MainActor
     func clean(text: String, prompt: String? = nil) async -> String {
+        let result = await cleanWithPerformance(text: text, prompt: prompt)
+        return result.text
+    }
+
+    @MainActor
+    func cleanWithPerformance(text: String, prompt: String? = nil) async -> TextCleanerResult {
         let activePrompt = prompt ?? Self.defaultPrompt
         let correctionEngine = DeterministicCorrectionEngine(
             preferredTranscriptions: correctionStore.preferredTranscriptions,
@@ -79,43 +98,24 @@ final class TextCleaner {
         }
 
         do {
-            sensitiveDebugLogger?(
-                .cleanup,
-                """
-                Cleanup prompt:
-                \(activePrompt)
-                """
-            )
-            sensitiveDebugLogger?(
-                .cleanup,
-                """
-                Cleanup LLM input:
-                \(correctedText)
-                """
-            )
+            let modelCallStart = Date()
             let cleanedText = try await localBackend.clean(text: correctedText, prompt: activePrompt)
-            sensitiveDebugLogger?(
-                .cleanup,
-                """
-                Cleanup LLM raw output:
-                \(cleanedText)
-                """
-            )
-
-            let sanitizedText = sanitizeCleanupOutput(cleanedText)
+            let modelCallDuration = Date().timeIntervalSince(modelCallStart)
+            let postProcessStart = Date()
+            let sanitizedText = Self.sanitizeCleanupOutput(cleanedText)
 
             if sanitizedText != cleanedText {
                 debugLogger?(.cleanup, "Stripped model reasoning tags from cleanup output.")
-                sensitiveDebugLogger?(
-                    .cleanup,
-                    """
-                    Cleanup LLM sanitized output:
-                    \(sanitizedText)
-                    """
-                )
             }
 
             let finalText = correctionEngine.applyPostCleanupCorrections(to: sanitizedText)
+            logCleanupTranscript(
+                prompt: activePrompt,
+                input: correctedText,
+                rawOutput: cleanedText,
+                sanitizedOutput: sanitizedText,
+                finalOutput: finalText
+            )
             if finalText == sanitizedText {
                 sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
             } else {
@@ -131,9 +131,16 @@ final class TextCleaner {
                     """
                 )
             }
-            return finalText
+            return TextCleanerResult(
+                text: finalText,
+                performance: TextCleanerPerformance(
+                    modelCallDuration: modelCallDuration,
+                    postProcessDuration: Date().timeIntervalSince(postProcessStart)
+                )
+            )
         } catch {
             debugLogger?(.cleanup, "Cleanup backend unavailable, returning deterministic corrections only.")
+            let postProcessStart = Date()
             let finalText = correctionEngine.applyPostCleanupCorrections(to: correctedText)
             if finalText == correctedText {
                 sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
@@ -150,17 +157,61 @@ final class TextCleaner {
                     """
                 )
             }
-            return finalText
+            return TextCleanerResult(
+                text: finalText,
+                performance: TextCleanerPerformance(
+                    modelCallDuration: nil,
+                    postProcessDuration: Date().timeIntervalSince(postProcessStart)
+                )
+            )
         }
     }
 
-    private func sanitizeCleanupOutput(_ text: String) -> String {
-        guard let expression = Self.thinkBlockExpression else {
-            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    static func sanitizeCleanupOutput(_ text: String) -> String {
+        var sanitizedText = text
+
+        if let expression = Self.thinkBlockExpression {
+            let range = NSRange(sanitizedText.startIndex..., in: sanitizedText)
+            sanitizedText = expression.stringByReplacingMatches(in: sanitizedText, range: range, withTemplate: "")
         }
 
-        let range = NSRange(text.startIndex..., in: text)
-        let sanitizedText = expression.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+        if let leadingThinkTagExpression = Self.leadingThinkTagExpression {
+            let range = NSRange(sanitizedText.startIndex..., in: sanitizedText)
+            if let match = leadingThinkTagExpression.firstMatch(in: sanitizedText, range: range),
+               let thinkStart = Range(match.range, in: sanitizedText)?.lowerBound {
+                sanitizedText = String(sanitizedText[..<thinkStart])
+            }
+        }
+
         return sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func logCleanupTranscript(
+        prompt: String,
+        input: String,
+        rawOutput: String,
+        sanitizedOutput: String,
+        finalOutput: String
+    ) {
+        sensitiveDebugLogger?(
+            .cleanup,
+            """
+            Cleanup LLM transcript:
+            System prompt:
+            \(prompt)
+
+            User input:
+            \(input)
+
+            Raw model output:
+            \(rawOutput)
+
+            Sanitized model output:
+            \(sanitizedOutput)
+
+            Final cleaned output:
+            \(finalOutput)
+            """
+        )
     }
 }

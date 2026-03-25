@@ -133,6 +133,24 @@ final class TextCleanerTests: XCTestCase {
         XCTAssertEqual(result, "Final cleaned text")
     }
 
+    func testCleanerStripsUnterminatedLeadingThinkBlockFromCleanupOutput() async {
+        let localBackend = SpyCleanupBackend(
+            nextResult: .success(
+                """
+                <think>
+                internal reasoning that never closes
+                """
+            )
+        )
+        let cleaner = TextCleaner(
+            localBackend: localBackend
+        )
+
+        let result = await cleaner.clean(text: "raw text", prompt: "unused prompt")
+
+        XCTAssertEqual(result, "")
+    }
+
     func testCleanerLogsPromptInputAndCorrectionStagesToSensitiveLogger() async throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
@@ -156,9 +174,32 @@ final class TextCleanerTests: XCTestCase {
 
         XCTAssertEqual(result, "Ghost Pepper is ready")
         XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Pre-cleanup corrections") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Cleanup prompt") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Cleanup LLM input") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Cleanup LLM raw output") }))
+        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Cleanup LLM transcript") }))
+        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("System prompt") }))
+        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("User input") }))
+        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Raw model output") }))
+        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Final cleaned output") }))
         XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Post-cleanup corrections") }))
+    }
+
+    func testCleanerReportsModelAndPostProcessingDurations() async {
+        let localBackend = SpyCleanupBackend(
+            nextResult: .success(
+                """
+                <think>
+                internal reasoning
+                </think>
+
+                Final cleaned text
+                """
+            )
+        )
+        let cleaner = TextCleaner(localBackend: localBackend)
+
+        let result = await cleaner.cleanWithPerformance(text: "raw text", prompt: "unused prompt")
+
+        XCTAssertEqual(result.text, "Final cleaned text")
+        XCTAssertNotNil(result.performance.modelCallDuration)
+        XCTAssertNotNil(result.performance.postProcessDuration)
     }
 }
