@@ -48,6 +48,31 @@ struct CleanupModelDescriptor: Equatable {
     let maxTokenCount: Int32
 }
 
+actor CleanupProbeExecutionGate {
+    private var isRunning = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func acquire() async {
+        if !isRunning {
+            isRunning = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func release() {
+        if waiters.isEmpty {
+            isRunning = false
+            return
+        }
+
+        waiters.removeFirst().resume()
+    }
+}
+
 @MainActor
 final class TextCleanupManager: ObservableObject, TextCleaningManaging {
     @Published private(set) var state: CleanupModelState = .idle
@@ -108,6 +133,7 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
     private let fullModelAvailabilityOverride: Bool?
     private let probeExecutionOverride: CleanupModelProbeExecutionOverride?
     private let backendShutdownOverride: (() -> Void)?
+    private let probeExecutionGate = CleanupProbeExecutionGate()
 
     init(
         defaults: UserDefaults = .standard,
@@ -219,44 +245,54 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
         modelKind: LocalCleanupModelKind,
         thinkingMode: CleanupModelProbeThinkingMode
     ) async throws -> CleanupModelProbeRawResult {
-        if let probeExecutionOverride {
-            return try await probeExecutionOverride(text, prompt, modelKind, thinkingMode)
-        }
-
-        guard let llm = model(for: modelKind) else {
-            debugLogger?(
-                .cleanup,
-                "Skipped local cleanup probe because model \(modelKind) was not ready."
-            )
-            throw CleanupModelProbeError.modelUnavailable(modelKind)
-        }
-
-        llm.useResolvedTemplate(systemPrompt: prompt)
-        llm.history = []
-
-        let start = Date()
+        await probeExecutionGate.acquire()
         do {
-            let rawOutput = try await withTimeout(seconds: Self.timeoutSeconds) {
-                await llm.respond(to: text, thinking: thinkingMode.llmThinkingMode)
-                return llm.output
+            if let probeExecutionOverride {
+                let result = try await probeExecutionOverride(text, prompt, modelKind, thinkingMode)
+                await probeExecutionGate.release()
+                return result
             }
-            let elapsed = Date().timeIntervalSince(start)
-            debugLogger?(
-                .cleanup,
-                "Local cleanup finished in \(String(format: "%.2f", elapsed))s using \(modelKind == .fast ? "fast" : "full") model."
-            )
-            return CleanupModelProbeRawResult(
-                modelKind: modelKind,
-                modelDisplayName: descriptor(for: modelKind).displayName,
-                rawOutput: rawOutput,
-                elapsed: elapsed
-            )
+
+            guard let llm = model(for: modelKind) else {
+                debugLogger?(
+                    .cleanup,
+                    "Skipped local cleanup probe because model \(modelKind) was not ready."
+                )
+                await probeExecutionGate.release()
+                throw CleanupModelProbeError.modelUnavailable(modelKind)
+            }
+
+            llm.useResolvedTemplate(systemPrompt: prompt)
+            llm.history = []
+
+            let start = Date()
+            do {
+                let rawOutput = try await withTimeout(seconds: Self.timeoutSeconds) {
+                    await llm.respond(to: text, thinking: thinkingMode.llmThinkingMode)
+                    return llm.output
+                }
+                let elapsed = Date().timeIntervalSince(start)
+                debugLogger?(
+                    .cleanup,
+                    "Local cleanup finished in \(String(format: "%.2f", elapsed))s using \(modelKind == .fast ? "fast" : "full") model."
+                )
+                await probeExecutionGate.release()
+                return CleanupModelProbeRawResult(
+                    modelKind: modelKind,
+                    modelDisplayName: descriptor(for: modelKind).displayName,
+                    rawOutput: rawOutput,
+                    elapsed: elapsed
+                )
+            } catch {
+                let elapsed = Date().timeIntervalSince(start)
+                debugLogger?(
+                    .cleanup,
+                    "Local cleanup failed after \(String(format: "%.2f", elapsed))s: \(error.localizedDescription)"
+                )
+                await probeExecutionGate.release()
+                throw error
+            }
         } catch {
-            let elapsed = Date().timeIntervalSince(start)
-            debugLogger?(
-                .cleanup,
-                "Local cleanup failed after \(String(format: "%.2f", elapsed))s: \(error.localizedDescription)"
-            )
             throw error
         }
     }

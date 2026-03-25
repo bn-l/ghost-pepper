@@ -3,6 +3,32 @@ import XCTest
 
 @MainActor
 final class TextCleanupManagerTests: XCTestCase {
+    actor ProbeConcurrencyHarness {
+        private var isRunning = false
+
+        func run(text: String) async -> CleanupModelProbeRawResult {
+            if isRunning {
+                return CleanupModelProbeRawResult(
+                    modelKind: .fast,
+                    modelDisplayName: TextCleanupManager.fastModel.displayName,
+                    rawOutput: "",
+                    elapsed: 0
+                )
+            }
+
+            isRunning = true
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            isRunning = false
+
+            return CleanupModelProbeRawResult(
+                modelKind: .fast,
+                modelDisplayName: TextCleanupManager.fastModel.displayName,
+                rawOutput: text,
+                elapsed: 0.05
+            )
+        }
+    }
+
     func testCleanupModelDescriptorsUseQwenThreeFamilyModels() {
         XCTAssertEqual(
             TextCleanupManager.fastModel.displayName,
@@ -129,5 +155,24 @@ final class TextCleanupManagerTests: XCTestCase {
         manager.shutdownBackend()
 
         XCTAssertEqual(shutdownCount, 2)
+    }
+
+    func testCleanupSerializesOverlappingRequests() async {
+        let harness = ProbeConcurrencyHarness()
+        let manager = TextCleanupManager(
+            localModelPolicy: .automatic,
+            fastModelAvailabilityOverride: true,
+            fullModelAvailabilityOverride: false,
+            probeExecutionOverride: { text, _, _, _ in
+                await harness.run(text: text)
+            }
+        )
+
+        async let first = manager.clean(text: "first", prompt: "unused")
+        async let second = manager.clean(text: "second", prompt: "unused")
+
+        let results = await [first, second]
+
+        XCTAssertEqual(results, ["first", "second"])
     }
 }
