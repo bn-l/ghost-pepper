@@ -9,19 +9,87 @@ struct FrontmostWindowReference: Equatable, Sendable {
 }
 
 final class FocusedElementLocator {
+    static func firstAvailableText<Element>(
+        startingAt element: Element,
+        maxAncestorDepth: Int = 8,
+        valueProvider: (Element) -> String?,
+        fallbackTextProvider: (Element) -> String? = { _ in nil },
+        parentProvider: (Element) -> Element?
+    ) -> String? {
+        var currentElement: Element? = element
+        var remainingDepth = maxAncestorDepth
+
+        while let element = currentElement {
+            if let text = valueProvider(element)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return text
+            }
+
+            if let text = fallbackTextProvider(element)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               !text.isEmpty {
+                return text
+            }
+
+            guard remainingDepth > 0 else {
+                return nil
+            }
+
+            currentElement = parentProvider(element)
+            remainingDepth -= 1
+        }
+
+        return nil
+    }
+
+    static func firstFocusedDescendant<Element>(
+        startingAt element: Element,
+        maxDepth: Int = 12,
+        focusedProvider: (Element) -> Bool,
+        childrenProvider: (Element) -> [Element]
+    ) -> Element? {
+        guard maxDepth >= 0 else {
+            return nil
+        }
+
+        if focusedProvider(element) {
+            return element
+        }
+
+        guard maxDepth > 0 else {
+            return nil
+        }
+
+        for child in childrenProvider(element) {
+            if let focusedElement = firstFocusedDescendant(
+                startingAt: child,
+                maxDepth: maxDepth - 1,
+                focusedProvider: focusedProvider,
+                childrenProvider: childrenProvider
+            ) {
+                return focusedElement
+            }
+        }
+
+        return nil
+    }
+
     func capturePasteSession(for text: String, at date: Date = Date()) -> PasteSession? {
         guard let application = NSWorkspace.shared.frontmostApplication else {
             return nil
         }
 
         let windowReference = frontmostWindowReference(for: application.processIdentifier)
+        let focusedElement = focusedElement(for: application.processIdentifier)
         return PasteSession(
             pastedText: text,
             pastedAt: date,
             frontmostAppBundleIdentifier: application.bundleIdentifier,
             frontmostWindowID: windowReference?.windowID,
             frontmostWindowFrame: windowReference?.frame,
-            focusedElementFrame: focusedElementFrame(for: application.processIdentifier)
+            focusedElementFrame: focusedElement.flatMap(frame(for:)),
+            focusedElementText: focusedElement.flatMap(text(for:))
         )
     }
 
@@ -42,24 +110,43 @@ final class FocusedElementLocator {
             return nil
         }
 
-        return focusedElementFrame(for: application.processIdentifier)
+        return focusedElement(for: application.processIdentifier).flatMap(frame(for:))
     }
 
-    private func focusedElementFrame(for processID: pid_t) -> CGRect? {
+    func focusedElementText() -> String? {
+        guard let application = NSWorkspace.shared.frontmostApplication else {
+            return nil
+        }
+
+        return focusedElement(for: application.processIdentifier).flatMap(text(for:))
+    }
+
+    private func focusedElement(for processID: pid_t) -> AXUIElement? {
         let applicationElement = AXUIElementCreateApplication(processID)
         var focusedElementValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
+        if AXUIElementCopyAttributeValue(
             applicationElement,
             kAXFocusedUIElementAttribute as CFString,
             &focusedElementValue
         ) == .success,
         let focusedElementValue,
-        CFGetTypeID(focusedElementValue) == AXUIElementGetTypeID() else {
+        CFGetTypeID(focusedElementValue) == AXUIElementGetTypeID() {
+            return unsafeBitCast(focusedElementValue, to: AXUIElement.self)
+        }
+
+        guard let focusedWindow = focusedWindow(for: applicationElement) else {
             return nil
         }
 
-        let focusedElement = unsafeBitCast(focusedElementValue, to: AXUIElement.self)
-        return frame(for: focusedElement)
+        return Self.firstFocusedDescendant(
+            startingAt: focusedWindow,
+            focusedProvider: { [weak self] in
+                self?.isFocused($0) ?? false
+            },
+            childrenProvider: { [weak self] in
+                self?.children(of: $0) ?? []
+            }
+        )
     }
 
     private func frame(for element: AXUIElement) -> CGRect? {
@@ -95,6 +182,129 @@ final class FocusedElementLocator {
         }
 
         return CGRect(origin: origin, size: size)
+    }
+
+    private func text(for element: AXUIElement) -> String? {
+        Self.firstAvailableText(
+            startingAt: element,
+            valueProvider: { [weak self] in
+                self?.directText(for: $0)
+            },
+            fallbackTextProvider: { [weak self] in
+                self?.textMarkerText(for: $0)
+            },
+            parentProvider: { [weak self] in
+                self?.parent(of: $0)
+            }
+        )
+    }
+
+    private func directText(for element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &value
+        ) == .success,
+        let value else {
+            return nil
+        }
+
+        if let text = value as? String {
+            return text
+        }
+
+        if let attributedText = value as? NSAttributedString {
+            return attributedText.string
+        }
+
+        return nil
+    }
+
+    private func textMarkerText(for element: AXUIElement) -> String? {
+        guard let startMarker = attributeValue(
+                named: "AXStartTextMarker",
+                of: element,
+                expectedTypeID: AXTextMarkerGetTypeID()
+              ),
+              let endMarker = attributeValue(
+                named: "AXEndTextMarker",
+                of: element,
+                expectedTypeID: AXTextMarkerGetTypeID()
+              ) else {
+            return nil
+        }
+
+        let range = AXTextMarkerRangeCreate(
+            kCFAllocatorDefault,
+            unsafeBitCast(startMarker, to: AXTextMarker.self),
+            unsafeBitCast(endMarker, to: AXTextMarker.self)
+        )
+        var textValue: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+                element,
+                "AXStringForTextMarkerRange" as CFString,
+                range,
+                &textValue
+              ) == .success,
+              let text = textValue as? String else {
+            return nil
+        }
+
+        return text
+    }
+
+    private func parent(of element: AXUIElement) -> AXUIElement? {
+        attributeElement(named: kAXParentAttribute as String, of: element)
+    }
+
+    private func children(of element: AXUIElement) -> [AXUIElement] {
+        guard let childValues = attributeValue(named: kAXChildrenAttribute as String, of: element) as? [Any] else {
+            return []
+        }
+
+        return childValues.compactMap {
+            let value = $0 as CFTypeRef
+            guard CFGetTypeID(value) == AXUIElementGetTypeID() else {
+                return nil
+            }
+
+            return unsafeBitCast(value, to: AXUIElement.self)
+        }
+    }
+
+    private func isFocused(_ element: AXUIElement) -> Bool {
+        (attributeValue(named: kAXFocusedAttribute as String, of: element) as? Bool) == true
+    }
+
+    private func focusedWindow(for applicationElement: AXUIElement) -> AXUIElement? {
+        attributeElement(named: kAXFocusedWindowAttribute as String, of: applicationElement)
+    }
+
+    private func attributeElement(named name: String, of element: AXUIElement) -> AXUIElement? {
+        guard let value = attributeValue(named: name, of: element, expectedTypeID: AXUIElementGetTypeID()) else {
+            return nil
+        }
+
+        return unsafeBitCast(value, to: AXUIElement.self)
+    }
+
+    private func attributeValue(
+        named name: String,
+        of element: AXUIElement,
+        expectedTypeID: CFTypeID? = nil
+    ) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success,
+              let value else {
+            return nil
+        }
+
+        if let expectedTypeID, CFGetTypeID(value) != expectedTypeID {
+            return nil
+        }
+
+        return value
     }
 
     private func frontmostWindowReference(for processID: pid_t) -> FrontmostWindowReference? {

@@ -144,10 +144,9 @@ class AppState: ObservableObject {
         self.postPasteLearningCoordinator = PostPasteLearningCoordinator(
             correctionStore: self.correctionStore,
             learningEnabled: storedPostPasteLearningEnabled,
-            revisit: { [correctionStore = self.correctionStore] session in
+            revisit: { session in
                 await PostPasteLearningObservationProvider.captureObservation(
-                    for: session,
-                    customWords: correctionStore.preferredOCRCustomWords
+                    for: session
                 )
             }
         )
@@ -172,6 +171,11 @@ class AppState: ObservableObject {
         hotkeyMonitor.updateBindings(shortcutBindings)
         self.textPaster.onPaste = { [postPasteLearningCoordinator = self.postPasteLearningCoordinator] session in
             postPasteLearningCoordinator.handlePaste(session)
+        }
+        self.postPasteLearningCoordinator.onLearnedCorrection = { [weak overlay] replacement in
+            Task { @MainActor in
+                overlay?.show(message: .learnedCorrection(replacement))
+            }
         }
         let componentDebugLogger: (DebugLogCategory, String) -> Void = { [weak debugLogStore] category, message in
             Task { @MainActor in

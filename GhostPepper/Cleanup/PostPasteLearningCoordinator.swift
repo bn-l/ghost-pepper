@@ -2,19 +2,22 @@ import CoreGraphics
 import Foundation
 
 struct PostPasteLearningObservation: Equatable, Sendable {
-    let recognizedText: String
-    let confidence: Double
+    let text: String
 }
 
 final class PostPasteLearningCoordinator {
     typealias Scheduler = @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
     typealias Revisit = @Sendable (PasteSession) async -> PostPasteLearningObservation?
 
-    static let learningDelay: TimeInterval = 15
-    private static let minimumConfidence = 0.95
-    private static let maximumReplacementWordCount = 4
+    static let observationWindow: TimeInterval = 15
+    static let pollInterval: TimeInterval = 1
+    static let quiescencePeriod: TimeInterval = 2
+    private static let maximumReplacementWordCount = 2
+    private static let maximumPollCount = Int(observationWindow / pollInterval) + 1
+    private static let requiredStablePollCount = Int(quiescencePeriod / pollInterval)
 
     var learningEnabled: Bool
+    var onLearnedCorrection: ((MisheardReplacement) -> Void)?
 
     private let correctionStore: CorrectionStore
     private let scheduler: Scheduler
@@ -42,35 +45,77 @@ final class PostPasteLearningCoordinator {
             return
         }
 
-        debugLogger?(.cleanup, "Scheduled post-paste learning revisit.")
-        scheduler(Self.learningDelay) {
+        debugLogger?(.cleanup, "Scheduled post-paste learning polling session.")
+        schedulePoll(
+            for: session,
+            progress: LearningProgress(
+                baselineText: Self.normalizedText(session.focusedElementText),
+                latestObservedText: nil,
+                stablePollCount: 0,
+                completedPollCount: 0
+            ),
+            delay: 0
+        )
+    }
+
+    private func schedulePoll(for session: PasteSession, progress: LearningProgress, delay: TimeInterval) {
+        scheduler(delay) {
             Task {
-                await self.learn(from: session)
+                await self.poll(session: session, progress: progress)
             }
         }
     }
 
-    private func learn(from session: PasteSession) async {
+    private func poll(session: PasteSession, progress: LearningProgress) async {
         guard learningEnabled else {
             debugLogger?(.cleanup, "Post-paste learning skipped because it is disabled.")
             return
         }
 
-        debugLogger?(.cleanup, "Post-paste learning revisit started.")
+        var nextProgress = progress
+        nextProgress.completedPollCount += 1
 
-        guard let observation = await revisit(session) else {
-            debugLogger?(.cleanup, "Post-paste learning skipped because no OCR revisit observation was captured.")
+        if let observation = await revisit(session),
+           let observedText = Self.normalizedText(observation.text) {
+            if nextProgress.baselineText == nil {
+                nextProgress.baselineText = observedText
+                nextProgress.latestObservedText = observedText
+                debugLogger?(.cleanup, "Post-paste learning captured initial text-field snapshot during polling.")
+            } else if !Self.stringsMatch(observedText, nextProgress.latestObservedText ?? "") {
+                nextProgress.latestObservedText = observedText
+                nextProgress.stablePollCount = 0
+                debugLogger?(.cleanup, "Post-paste learning observed text-field edits and is waiting for them to settle.")
+            } else if nextProgress.latestObservedText != nil {
+                nextProgress.stablePollCount += 1
+                debugLogger?(
+                    .cleanup,
+                    "Post-paste learning observed \(nextProgress.stablePollCount)s of text-field quiescence."
+                )
+            }
+        } else {
+            debugLogger?(.cleanup, "Post-paste learning poll found no readable focused text field.")
+        }
+
+        if let baselineText = nextProgress.baselineText,
+           let observedText = nextProgress.latestObservedText,
+           nextProgress.stablePollCount >= Self.requiredStablePollCount {
+            await learn(from: baselineText, to: observedText, pastedText: session.pastedText)
             return
         }
 
-        guard observation.confidence >= Self.minimumConfidence else {
-            debugLogger?(.cleanup, "Post-paste learning skipped because OCR confidence \(observation.confidence) was below threshold.")
+        if nextProgress.completedPollCount >= Self.maximumPollCount {
+            debugLogger?(.cleanup, "Post-paste learning skipped because the polling window expired without a stable correction.")
             return
         }
 
+        schedulePoll(for: session, progress: nextProgress, delay: Self.pollInterval)
+    }
+
+    private func learn(from baselineText: String, to observedText: String, pastedText: String) async {
         guard let replacement = Self.inferredReplacement(
-            from: session.pastedText,
-            to: observation.recognizedText
+            from: baselineText,
+            to: observedText,
+            constrainedTo: pastedText
         ) else {
             debugLogger?(.cleanup, "Post-paste learning skipped because no narrow correction could be inferred.")
             return
@@ -94,9 +139,14 @@ final class PostPasteLearningCoordinator {
     private func store(_ replacement: MisheardReplacement) {
         correctionStore.appendCommonlyMisheard(replacement)
         debugLogger?(.cleanup, "Post-paste learning learned replacement: \(replacement.wrong) -> \(replacement.right)")
+        onLearnedCorrection?(replacement)
     }
 
-    private static func inferredReplacement(from original: String, to observed: String) -> MisheardReplacement? {
+    private static func inferredReplacement(
+        from original: String,
+        to observed: String,
+        constrainedTo pastedText: String
+    ) -> MisheardReplacement? {
         let trimmedOriginal = original.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedObserved = observed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedOriginal.isEmpty,
@@ -126,7 +176,8 @@ final class PostPasteLearningCoordinator {
         guard !wrong.isEmpty,
               !right.isEmpty,
               wordCount(in: wrong) <= maximumReplacementWordCount,
-              wordCount(in: right) <= maximumReplacementWordCount else {
+              wordCount(in: right) <= maximumReplacementWordCount,
+              containsWordSequence(wrong, in: pastedText) else {
             return nil
         }
 
@@ -164,6 +215,15 @@ final class PostPasteLearningCoordinator {
         lhs.caseInsensitiveCompare(rhs) == .orderedSame
     }
 
+    private static func normalizedText(_ text: String?) -> String? {
+        guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !text.isEmpty else {
+            return nil
+        }
+
+        return text
+    }
+
     private static func words(in text: String) -> [String] {
         text.split(whereSeparator: \.isWhitespace).map(String.init)
     }
@@ -171,112 +231,64 @@ final class PostPasteLearningCoordinator {
     private static func wordCount(in text: String) -> Int {
         words(in: text).count
     }
+
+    private static func containsWordSequence(_ needle: String, in haystack: String) -> Bool {
+        let needleWords = words(in: needle)
+        let haystackWords = words(in: haystack)
+        guard !needleWords.isEmpty, needleWords.count <= haystackWords.count else {
+            return false
+        }
+
+        let lastStartIndex = haystackWords.count - needleWords.count
+        for startIndex in 0...lastStartIndex {
+            let candidate = Array(haystackWords[startIndex..<(startIndex + needleWords.count)])
+            if zip(candidate, needleWords).allSatisfy(stringsMatch) {
+                return true
+            }
+        }
+
+        return false
+    }
+}
+
+private struct LearningProgress: Sendable {
+    var baselineText: String?
+    var latestObservedText: String?
+    var stablePollCount: Int
+    var completedPollCount: Int
 }
 
 enum PostPasteLearningObservationProvider {
     static func captureObservation(
         for session: PasteSession,
-        customWords: [String],
-        locator: FocusedElementLocator = FocusedElementLocator(),
-        windowCaptureService: WindowCaptureServing = WindowCaptureService(),
-        requestFactory: OCRRequestFactory = OCRRequestFactory()
+        locator: FocusedElementLocator = FocusedElementLocator()
     ) async -> PostPasteLearningObservation? {
-        guard PermissionChecker.hasScreenRecordingPermission(),
-              locator.frontmostApplicationBundleIdentifier() == session.frontmostAppBundleIdentifier,
-              let currentWindow = locator.frontmostWindowReference(),
-              currentWindow.windowID == session.frontmostWindowID,
-              let image = try? await windowCaptureService.captureFrontmostWindowImage() else {
-            return nil
-        }
-
+        let currentBundleIdentifier = locator.frontmostApplicationBundleIdentifier()
+        let currentWindow = locator.frontmostWindowReference()
         let currentFocusedFrame = locator.focusedElementFrame()
-        let focusedCrop = focusedCropImage(
-            from: image,
-            currentWindowFrame: currentWindow.frame,
-            session: session,
-            currentFocusedFrame: currentFocusedFrame
-        )
-        let targetImage = focusedCrop ?? image
 
-        guard let result = try? requestFactory.recognizeDetailedText(
-            in: targetImage,
-            customWords: customWords
-        ) else {
+        guard isEligibleObservation(
+                for: session,
+                currentBundleIdentifier: currentBundleIdentifier,
+                currentWindowReference: currentWindow,
+                currentFocusedFrame: currentFocusedFrame
+              ),
+              let text = locator.focusedElementText(),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
 
-        return PostPasteLearningObservation(
-            recognizedText: result.text,
-            confidence: result.confidence
-        )
+        return PostPasteLearningObservation(text: text)
     }
 
-    private static func focusedCropImage(
-        from image: CGImage,
-        currentWindowFrame: CGRect,
-        session: PasteSession,
+    static func isEligibleObservation(
+        for session: PasteSession,
+        currentBundleIdentifier: String?,
+        currentWindowReference: FrontmostWindowReference?,
         currentFocusedFrame: CGRect?
-    ) -> CGImage? {
-        guard let sessionFocusedFrame = session.focusedElementFrame,
-              let currentFocusedFrame,
-              currentFocusedFrame.height > 0,
-              currentFocusedFrame.width > 0,
-              framesApproximatelyMatch(sessionFocusedFrame, currentFocusedFrame) else {
-            return nil
-        }
-
-        return crop(
-            image: image,
-            windowFrame: currentWindowFrame,
-            targetFrame: currentFocusedFrame
-        )
-    }
-
-    private static func framesApproximatelyMatch(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
-        let allowableDeltaX = max(24, lhs.width * 0.2)
-        let allowableDeltaY = max(24, lhs.height * 0.2)
-        let allowableWidthDelta = max(24, lhs.width * 0.2)
-        let allowableHeightDelta = max(24, lhs.height * 0.2)
-
-        return abs(lhs.minX - rhs.minX) <= allowableDeltaX &&
-            abs(lhs.minY - rhs.minY) <= allowableDeltaY &&
-            abs(lhs.width - rhs.width) <= allowableWidthDelta &&
-            abs(lhs.height - rhs.height) <= allowableHeightDelta
-    }
-
-    private static func crop(
-        image: CGImage,
-        windowFrame: CGRect,
-        targetFrame: CGRect
-    ) -> CGImage? {
-        guard windowFrame.width > 0, windowFrame.height > 0 else {
-            return nil
-        }
-
-        let normalizedRect = CGRect(
-            x: (targetFrame.minX - windowFrame.minX) / windowFrame.width,
-            y: (targetFrame.minY - windowFrame.minY) / windowFrame.height,
-            width: targetFrame.width / windowFrame.width,
-            height: targetFrame.height / windowFrame.height
-        ).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-
-        guard !normalizedRect.isNull,
-              normalizedRect.width > 0,
-              normalizedRect.height > 0 else {
-            return nil
-        }
-
-        let cropRect = CGRect(
-            x: normalizedRect.minX * CGFloat(image.width),
-            y: (1 - normalizedRect.maxY) * CGFloat(image.height),
-            width: normalizedRect.width * CGFloat(image.width),
-            height: normalizedRect.height * CGFloat(image.height)
-        ).integral
-
-        guard cropRect.width > 0, cropRect.height > 0 else {
-            return nil
-        }
-
-        return image.cropping(to: cropRect)
+    ) -> Bool {
+        _ = currentWindowReference
+        _ = currentFocusedFrame
+        return currentBundleIdentifier == session.frontmostAppBundleIdentifier
     }
 }

@@ -93,7 +93,6 @@ final class TextPaster {
     /// - Parameter text: The text to paste.
     func paste(text: String) {
         let savedState = saveClipboard()
-        let pasteSession = pasteSessionProvider(text, Date())
 
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
@@ -101,11 +100,12 @@ final class TextPaster {
 
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.preKeystrokeDelay) { [weak self] in
             self?.simulateCmdV()
-            if let pasteSession {
-                self?.onPaste?(pasteSession)
-            }
 
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.postKeystrokeDelay) { [weak self] in
+                if let pasteSession = self?.pasteSessionProvider(text, Date()) {
+                    self?.onPaste?(pasteSession)
+                }
+
                 if let savedState = savedState {
                     self?.restoreClipboard(savedState)
                 }

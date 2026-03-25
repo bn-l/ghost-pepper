@@ -3,18 +3,20 @@ import XCTest
 
 @MainActor
 final class PostPasteLearningCoordinatorTests: XCTestCase {
-    func testCoordinatorStartsLearningPassAfterPasteDelay() async throws {
+    func testCoordinatorStartsPollingImmediatelyAfterPaste() async throws {
+        XCTAssertEqual(PostPasteLearningCoordinator.observationWindow, 15)
+        XCTAssertEqual(PostPasteLearningCoordinator.pollInterval, 1)
+        XCTAssertEqual(PostPasteLearningCoordinator.quiescencePeriod, 2)
+
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let correctionStore = CorrectionStore(defaults: defaults)
-        var scheduledDelay: TimeInterval?
-        var scheduledWork: (() -> Void)?
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
         var revisitCallCount = 0
         let coordinator = PostPasteLearningCoordinator(
             correctionStore: correctionStore,
             scheduler: { delay, work in
-                scheduledDelay = delay
-                scheduledWork = work
+                scheduledCalls.append((delay, work))
             },
             revisit: { _ in
                 revisitCallCount += 1
@@ -24,10 +26,11 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
 
         coordinator.handlePaste(samplePasteSession())
 
-        XCTAssertEqual(scheduledDelay, PostPasteLearningCoordinator.learningDelay)
+        XCTAssertEqual(scheduledCalls.count, 1)
+        XCTAssertEqual(scheduledCalls.first?.0, 0)
         XCTAssertEqual(revisitCallCount, 0)
 
-        scheduledWork?()
+        await runNextScheduledCall(&scheduledCalls)
         await waitUntil { revisitCallCount == 1 }
 
         XCTAssertEqual(revisitCallCount, 1)
@@ -43,8 +46,7 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
             scheduler: { _, work in scheduledWork = work },
             revisit: { _ in
                 PostPasteLearningObservation(
-                    recognizedText: "This sentence was rewritten into something unrelated",
-                    confidence: 0.99
+                    text: "This sentence was rewritten into something unrelated"
                 )
             }
         )
@@ -60,20 +62,31 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let correctionStore = CorrectionStore(defaults: defaults)
-        var scheduledWork: (() -> Void)?
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
+        var observations = [
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it"
+        ]
         let coordinator = PostPasteLearningCoordinator(
             correctionStore: correctionStore,
-            scheduler: { _, work in scheduledWork = work },
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
             revisit: { _ in
-                PostPasteLearningObservation(
-                    recognizedText: "Jesse approved it",
-                    confidence: 0.99
+                guard !observations.isEmpty else {
+                    return nil
+                }
+
+                let text = observations.removeFirst()
+                return PostPasteLearningObservation(
+                    text: text
                 )
             }
         )
 
         coordinator.handlePaste(samplePasteSession())
-        scheduledWork?()
+        await runScheduledCalls(&scheduledCalls, count: 3)
         await waitUntil {
             correctionStore.commonlyMisheard == [MisheardReplacement(wrong: "just see", right: "Jesse")]
         }
@@ -86,13 +99,11 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
 
     func testCoordinatorUsesInjectedSchedulerInsteadOfRealSleep() {
         let correctionStore = CorrectionStore(defaults: UserDefaults(suiteName: #function)!)
-        var scheduledDelay: TimeInterval?
-        var scheduledWork: (() -> Void)?
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
         let coordinator = PostPasteLearningCoordinator(
             correctionStore: correctionStore,
             scheduler: { delay, work in
-                scheduledDelay = delay
-                scheduledWork = work
+                scheduledCalls.append((delay, work))
             },
             revisit: { _ in
                 XCTFail("Revisit should not run until the test triggers the scheduled work")
@@ -102,8 +113,7 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
 
         coordinator.handlePaste(samplePasteSession())
 
-        XCTAssertEqual(scheduledDelay, PostPasteLearningCoordinator.learningDelay)
-        XCTAssertNotNil(scheduledWork)
+        XCTAssertEqual(scheduledCalls.map(\.0), [0])
     }
 
     func testCoordinatorDoesNotScheduleWhenLearningIsDisabled() throws {
@@ -118,7 +128,7 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
                 scheduledWork = work
             },
             revisit: { _ in
-                XCTFail("Disabled learning should not trigger OCR revisit")
+                XCTFail("Disabled learning should not trigger text-field revisit")
                 return nil
             }
         )
@@ -129,24 +139,64 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
         XCTAssertTrue(correctionStore.commonlyMisheard.isEmpty)
     }
 
-    func testCoordinatorRejectsLowConfidenceObservation() async throws {
+    func testCoordinatorRejectsChangesOutsideThePastedWords() async throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let correctionStore = CorrectionStore(defaults: defaults)
-        var scheduledWork: (() -> Void)?
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
+        var observations = [
+            "tomorrow maybe later",
+            "tomorrow maybe later",
+            "tomorrow maybe later",
+            "tomorrow maybe later",
+            "tomorrow maybe later"
+        ]
         let coordinator = PostPasteLearningCoordinator(
             correctionStore: correctionStore,
-            scheduler: { _, work in scheduledWork = work },
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
             revisit: { _ in
-                PostPasteLearningObservation(
-                    recognizedText: "Jesse approved it",
-                    confidence: 0.6
+                let text = observations.removeFirst()
+                return PostPasteLearningObservation(
+                    text: text
                 )
             }
         )
 
         coordinator.handlePaste(samplePasteSession())
-        scheduledWork?()
+        await runScheduledCalls(&scheduledCalls, count: 3)
+        await Task.yield()
+
+        XCTAssertTrue(correctionStore.commonlyMisheard.isEmpty)
+    }
+
+    func testCoordinatorRejectsThreeWordReplacement() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let correctionStore = CorrectionStore(defaults: defaults)
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
+        var observations = [
+            "please email Jesse Vincent tomorrow",
+            "please email Jesse Vincent tomorrow",
+            "please email Jesse Vincent tomorrow",
+            "please email Jesse Vincent tomorrow",
+            "please email Jesse Vincent tomorrow"
+        ]
+        let coordinator = PostPasteLearningCoordinator(
+            correctionStore: correctionStore,
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
+            revisit: { _ in
+                let text = observations.removeFirst()
+                return PostPasteLearningObservation(
+                    text: text
+                )
+            }
+        )
+
+        coordinator.handlePaste(samplePasteSession(
+            pastedText: "please email just see vincent tomorrow",
+            focusedElementText: "please email just see vincent tomorrow"
+        ))
+        await runScheduledCalls(&scheduledCalls, count: 3)
         await Task.yield()
 
         XCTAssertTrue(correctionStore.commonlyMisheard.isEmpty)
@@ -156,15 +206,22 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let correctionStore = CorrectionStore(defaults: defaults)
-        var scheduledWork: (() -> Void)?
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
+        var observations = [
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it"
+        ]
         var debugMessages: [String] = []
         let coordinator = PostPasteLearningCoordinator(
             correctionStore: correctionStore,
-            scheduler: { _, work in scheduledWork = work },
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
             revisit: { _ in
-                PostPasteLearningObservation(
-                    recognizedText: "Jesse approved it",
-                    confidence: 0.99
+                let text = observations.removeFirst()
+                return PostPasteLearningObservation(
+                    text: text
                 )
             }
         )
@@ -173,29 +230,26 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
         }
 
         coordinator.handlePaste(samplePasteSession())
-        scheduledWork?()
+        await runScheduledCalls(&scheduledCalls, count: 3)
         await waitUntil {
             correctionStore.commonlyMisheard == [MisheardReplacement(wrong: "just see", right: "Jesse")]
         }
 
-        XCTAssertTrue(debugMessages.contains(where: { $0.contains("Scheduled post-paste learning revisit") }))
+        XCTAssertTrue(debugMessages.contains(where: { $0.contains("Scheduled post-paste learning polling session") }))
         XCTAssertTrue(debugMessages.contains(where: { $0.contains("Post-paste learning learned replacement: just see -> Jesse") }))
     }
 
-    func testCoordinatorLogsWhyLearningSkipped() async throws {
+    func testCoordinatorLogsWhyLearningSkippedWhenPollingWindowExpires() async throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let correctionStore = CorrectionStore(defaults: defaults)
-        var scheduledWork: (() -> Void)?
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
         var debugMessages: [String] = []
         let coordinator = PostPasteLearningCoordinator(
             correctionStore: correctionStore,
-            scheduler: { _, work in scheduledWork = work },
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
             revisit: { _ in
-                PostPasteLearningObservation(
-                    recognizedText: "Jesse approved it",
-                    confidence: 0.6
-                )
+                nil
             }
         )
         coordinator.debugLogger = { _, message in
@@ -203,20 +257,99 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
         }
 
         coordinator.handlePaste(samplePasteSession())
-        scheduledWork?()
-        await Task.yield()
+        while !scheduledCalls.isEmpty {
+            await runNextScheduledCall(&scheduledCalls)
+        }
+        await waitUntil {
+            debugMessages.contains(where: { $0.contains("Post-paste learning skipped because the polling window expired without a stable correction") })
+        }
 
-        XCTAssertTrue(debugMessages.contains(where: { $0.contains("Post-paste learning skipped because OCR confidence") }))
+        XCTAssertTrue(debugMessages.contains(where: { $0.contains("Post-paste learning skipped because the polling window expired without a stable correction") }))
     }
 
-    private func samplePasteSession() -> PasteSession {
+    func testCoordinatorNotifiesWhenItLearnsCorrection() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let correctionStore = CorrectionStore(defaults: defaults)
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
+        var observations = [
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it",
+            "Jesse approved it"
+        ]
+        var learnedReplacement: MisheardReplacement?
+        let coordinator = PostPasteLearningCoordinator(
+            correctionStore: correctionStore,
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
+            revisit: { _ in
+                let text = observations.removeFirst()
+                return PostPasteLearningObservation(
+                    text: text
+                )
+            }
+        )
+        coordinator.onLearnedCorrection = { replacement in
+            learnedReplacement = replacement
+        }
+
+        coordinator.handlePaste(samplePasteSession())
+        await runScheduledCalls(&scheduledCalls, count: 3)
+        await waitUntil { learnedReplacement == MisheardReplacement(wrong: "just see", right: "Jesse") }
+
+        XCTAssertEqual(learnedReplacement, MisheardReplacement(wrong: "just see", right: "Jesse"))
+    }
+
+    func testCoordinatorCanLearnAfterLateInitialSnapshotCapture() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let correctionStore = CorrectionStore(defaults: defaults)
+        var scheduledCalls: [(TimeInterval, () -> Void)] = []
+        var observations: [PostPasteLearningObservation?] = [
+            nil,
+            PostPasteLearningObservation(text: "just see approved it"),
+            PostPasteLearningObservation(text: "Jesse approved it"),
+            PostPasteLearningObservation(text: "Jesse approved it"),
+            PostPasteLearningObservation(text: "Jesse approved it")
+        ]
+        let coordinator = PostPasteLearningCoordinator(
+            correctionStore: correctionStore,
+            scheduler: { delay, work in scheduledCalls.append((delay, work)) },
+            revisit: { _ in
+                guard !observations.isEmpty else {
+                    return nil
+                }
+
+                return observations.removeFirst()
+            }
+        )
+
+        coordinator.handlePaste(samplePasteSession(focusedElementText: nil))
+
+        await runScheduledCalls(&scheduledCalls, count: 5)
+        await waitUntil {
+            correctionStore.commonlyMisheard == [MisheardReplacement(wrong: "just see", right: "Jesse")]
+        }
+
+        XCTAssertEqual(
+            correctionStore.commonlyMisheard,
+            [MisheardReplacement(wrong: "just see", right: "Jesse")]
+        )
+    }
+
+    private func samplePasteSession(
+        pastedText: String = "just see approved it",
+        focusedElementText: String? = "just see approved it"
+    ) -> PasteSession {
         PasteSession(
-            pastedText: "just see approved it",
+            pastedText: pastedText,
             pastedAt: Date(timeIntervalSince1970: 1_742_751_200),
             frontmostAppBundleIdentifier: "com.example.app",
             frontmostWindowID: 42,
             frontmostWindowFrame: CGRect(x: 10, y: 20, width: 800, height: 600),
-            focusedElementFrame: CGRect(x: 20, y: 40, width: 300, height: 120)
+            focusedElementFrame: CGRect(x: 20, y: 40, width: 300, height: 120),
+            focusedElementText: focusedElementText
         )
     }
 
@@ -232,5 +365,27 @@ final class PostPasteLearningCoordinatorTests: XCTestCase {
 
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
+    }
+
+    private func runScheduledCalls(
+        _ scheduledCalls: inout [(TimeInterval, () -> Void)],
+        count: Int
+    ) async {
+        for _ in 0..<count {
+            await runNextScheduledCall(&scheduledCalls)
+        }
+    }
+
+    private func runNextScheduledCall(
+        _ scheduledCalls: inout [(TimeInterval, () -> Void)]
+    ) async {
+        let deadline = Date().addingTimeInterval(0.5)
+        while scheduledCalls.isEmpty, Date() < deadline {
+            await Task.yield()
+        }
+
+        XCTAssertFalse(scheduledCalls.isEmpty)
+        scheduledCalls.removeFirst().1()
+        await Task.yield()
     }
 }

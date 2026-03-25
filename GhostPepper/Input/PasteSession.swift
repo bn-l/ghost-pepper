@@ -8,4 +8,5 @@ struct PasteSession: Equatable, Sendable {
     let frontmostWindowID: UInt32?
     let frontmostWindowFrame: CGRect?
     let focusedElementFrame: CGRect?
+    let focusedElementText: String?
 }
