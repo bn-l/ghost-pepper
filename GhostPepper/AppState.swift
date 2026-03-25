@@ -80,6 +80,7 @@ class AppState: ObservableObject {
     }
 
     private var cleanupStateObserver: Any? = nil
+    private let recordingOCRPrefetch: RecordingOCRPrefetch
     private var activePerformanceTrace: PerformanceTrace?
     private var activeCleanupAttempted = false
     private let cleanupSettingsDefaults: UserDefaults
@@ -136,6 +137,9 @@ class AppState: ObservableObject {
         self.toggleToTalkChord = chordBindingStore.binding(for: .toggleToTalk) ?? AppState.defaultToggleToTalkChord
         self.textCleanupManager = textCleanupManager ?? TextCleanupManager(defaults: cleanupSettingsDefaults)
         self.frontmostWindowOCRService = frontmostWindowOCRService
+        self.recordingOCRPrefetch = RecordingOCRPrefetch { [frontmostWindowOCRService] customWords in
+            await frontmostWindowOCRService.captureContext(customWords: customWords)
+        }
         self.cleanupPromptBuilder = cleanupPromptBuilder
         self.correctionStore = correctionStore ?? CorrectionStore(defaults: cleanupSettingsDefaults)
         let storedCleanupBackend = CleanupBackendOption(
@@ -365,6 +369,11 @@ class AppState: ObservableObject {
         }
 
         do {
+            if cleanupEnabled && canAttemptCleanup && frontmostWindowContextEnabled {
+                recordingOCRPrefetch.start(customWords: ocrCustomWords)
+            } else {
+                recordingOCRPrefetch.cancel()
+            }
             try audioRecorder.startRecording()
             debugLogStore.record(category: .hotkey, message: "Recording started.")
             soundEffects.playStart()
@@ -372,6 +381,7 @@ class AppState: ObservableObject {
             isRecording = true
             status = .recording
         } catch {
+            recordingOCRPrefetch.cancel()
             activePerformanceTrace = nil
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
             status = .error
@@ -399,9 +409,9 @@ class AppState: ObservableObject {
                 overlay.show(message: .cleaningUp)
 
                 if frontmostWindowContextEnabled {
-                    let ocrCaptureStart = Date()
-                    windowContext = await frontmostWindowOCRService.captureContext(customWords: ocrCustomWords)
-                    activePerformanceTrace?.ocrCaptureDuration = Date().timeIntervalSince(ocrCaptureStart)
+                    let prefetchedContext = await recordingOCRPrefetch.resolve()
+                    windowContext = prefetchedContext?.context
+                    activePerformanceTrace?.ocrCaptureDuration = prefetchedContext?.elapsed
                     if windowContext == nil {
                         debugLogStore.record(category: .ocr, message: "No frontmost-window OCR context was captured.")
                     }
@@ -424,6 +434,7 @@ class AppState: ObservableObject {
             overlay.dismiss()
             textPaster.paste(text: finalText)
         } else {
+            recordingOCRPrefetch.cancel()
             activePerformanceTrace?.transcriptionEndAt = Date()
             switch Self.emptyTranscriptionDisposition(forAudioSampleCount: buffer.count) {
             case .cancel:
@@ -570,6 +581,7 @@ class AppState: ObservableObject {
 
         activePerformanceTrace = nil
         activeCleanupAttempted = false
+        recordingOCRPrefetch.cancel()
     }
 
     func updateShortcut(_ chord: KeyChord, for action: ChordAction) {

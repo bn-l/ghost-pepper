@@ -11,6 +11,7 @@
 		0606E11E6F102BBB44ED08B6 /* ScreenRecordingPermissionControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C9ECBFE04804AA79262A07B /* ScreenRecordingPermissionControllerTests.swift */; };
 		0A1823314AE4FF4E17DCF627 /* sprite_frame_0.png in Resources */ = {isa = PBXBuildFile; fileRef = 2AF744C59EEAE51FC81BE6D6 /* sprite_frame_0.png */; };
 		0BC5D4645D21CA8AA000972E /* RecordingOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A3540C6212101C885EA22CD /* RecordingOverlay.swift */; };
+		0CDA12F05A7C7464334FDD37 /* RecordingOCRPrefetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94E9AADC67C525B0A9E382AB /* RecordingOCRPrefetch.swift */; };
 		0D32E8DDD47F77F86D9C1816 /* CleanupModelProbeRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B93B4F9F40EE6BD8525677 /* CleanupModelProbeRunnerTests.swift */; };
 		11B19088ACBD174CFD3DD531 /* CleanupPromptBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDC6FD42E70C7163E281332B /* CleanupPromptBuilder.swift */; };
 		17AF31EA19761CA8B7DF5F9A /* CleanupSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0065F99395EEC3EB77997C2C /* CleanupSettings.swift */; };
@@ -36,6 +37,7 @@
 		408C8D6C7BE897429324F4F1 /* PerformanceTrace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 016C38149DDDAA03B88E35C0 /* PerformanceTrace.swift */; };
 		41C94A48B97D3A6861EA1E92 /* PostPasteLearningCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABAC2D0F6C311FB1DA3E9ABF /* PostPasteLearningCoordinatorTests.swift */; };
 		4CFBE4928A2B811D649B4140 /* TextCleanupManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 37C0D4F04FFD2C13DEACA238 /* TextCleanupManager.swift */; };
+		4DD74E9C222518EEB0DA2A9B /* RecordingOCRPrefetchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80731398639640F62FFC4524 /* RecordingOCRPrefetchTests.swift */; };
 		4EAE492B8F7F4CB18D2E0FE9 /* AudioRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F5407DA5D09555EDD69CA54 /* AudioRecorder.swift */; };
 		4F4C2206E3914B226A9DE4C0 /* PhysicalKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA57E9C267251FC86A8C8672 /* PhysicalKey.swift */; };
 		527B55EBCA9ACB4EC0FBC618 /* sprite_frame_0@2x.png in Resources */ = {isa = PBXBuildFile; fileRef = 79231C6829FD88741536FF4A /* sprite_frame_0@2x.png */; };
@@ -172,6 +174,7 @@
 		76A684AACE597180BC4B0169 /* MicPreviewControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicPreviewControllerTests.swift; sourceTree = "<group>"; };
 		770403076BA384F3E35AA7A1 /* TextCleanupManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextCleanupManagerTests.swift; sourceTree = "<group>"; };
 		79231C6829FD88741536FF4A /* sprite_frame_0@2x.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "sprite_frame_0@2x.png"; sourceTree = "<group>"; };
+		80731398639640F62FFC4524 /* RecordingOCRPrefetchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOCRPrefetchTests.swift; sourceTree = "<group>"; };
 		8348D35B3C14A52DCB5138E2 /* CleanupBackend.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupBackend.swift; sourceTree = "<group>"; };
 		853418773B99673FB27791AC /* CleanupModelProbeRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupModelProbeRunner.swift; sourceTree = "<group>"; };
 		886EA12D06680BB95FB78309 /* CleanupBackendTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupBackendTests.swift; sourceTree = "<group>"; };
@@ -181,6 +184,7 @@
 		934F425F25CCB580B8202127 /* PasteSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PasteSession.swift; sourceTree = "<group>"; };
 		948064EDD38AFB0872A99BD6 /* CleanupPromptBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanupPromptBuilder.swift; sourceTree = "<group>"; };
 		94DD151A4D6F1474F4F138FD /* GhostPepper.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = GhostPepper.entitlements; sourceTree = "<group>"; };
+		94E9AADC67C525B0A9E382AB /* RecordingOCRPrefetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOCRPrefetch.swift; sourceTree = "<group>"; };
 		960D35875D60655B17574DF8 /* AudioRecorderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioRecorderTests.swift; sourceTree = "<group>"; };
 		9A3540C6212101C885EA22CD /* RecordingOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingOverlay.swift; sourceTree = "<group>"; };
 		9A54422D17879836781B7F71 /* KeyChord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyChord.swift; sourceTree = "<group>"; };
@@ -444,6 +448,7 @@
 				1DC632CC6DD4F55F2FA05480 /* FrontmostWindowOCRService.swift */,
 				CDB3BCEA6FF268C1759D1F20 /* OCRContext.swift */,
 				E45DE13042196F9DF2445E66 /* OCRRequestFactory.swift */,
+				94E9AADC67C525B0A9E382AB /* RecordingOCRPrefetch.swift */,
 				17F70F511A956DAB5778D430 /* WindowCaptureService.swift */,
 			);
 			path = Context;
@@ -468,6 +473,7 @@
 				A2E051FC96D522216E8C2F01 /* OCRContextTests.swift */,
 				59666FBC728BF70A61983188 /* PerformanceTraceTests.swift */,
 				ABAC2D0F6C311FB1DA3E9ABF /* PostPasteLearningCoordinatorTests.swift */,
+				80731398639640F62FFC4524 /* RecordingOCRPrefetchTests.swift */,
 				38C742095D3934D70BCE44E4 /* RuntimeModelInventoryTests.swift */,
 				9C9ECBFE04804AA79262A07B /* ScreenRecordingPermissionControllerTests.swift */,
 				231812B1BF8E3F2D5E0209F3 /* ShortcutCaptureStateTests.swift */,
@@ -645,6 +651,7 @@
 				4F4C2206E3914B226A9DE4C0 /* PhysicalKey.swift in Sources */,
 				AF1DD5FE5059779E1D5D59C2 /* PostPasteLearningCoordinator.swift in Sources */,
 				C18E7F36CC6523A86671707D /* PromptEditorWindow.swift in Sources */,
+				0CDA12F05A7C7464334FDD37 /* RecordingOCRPrefetch.swift in Sources */,
 				0BC5D4645D21CA8AA000972E /* RecordingOverlay.swift in Sources */,
 				056C454F3BD1A9795C6775A5 /* ScreenRecordingPermissionController.swift in Sources */,
 				80C9E55FF57A1A03033DDDAE /* SettingsWindow.swift in Sources */,
@@ -701,6 +708,7 @@
 				E5E590FA60691DA4B57DA7CB /* OCRContextTests.swift in Sources */,
 				E3302E239909CAEC0865A035 /* PerformanceTraceTests.swift in Sources */,
 				41C94A48B97D3A6861EA1E92 /* PostPasteLearningCoordinatorTests.swift in Sources */,
+				4DD74E9C222518EEB0DA2A9B /* RecordingOCRPrefetchTests.swift in Sources */,
 				571085951E318B0ADD2B00EA /* RuntimeModelInventoryTests.swift in Sources */,
 				0606E11E6F102BBB44ED08B6 /* ScreenRecordingPermissionControllerTests.swift in Sources */,
 				BE7701382D2CC62C1CEBF29C /* ShortcutCaptureStateTests.swift in Sources */,
