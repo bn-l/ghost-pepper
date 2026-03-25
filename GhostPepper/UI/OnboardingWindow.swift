@@ -15,7 +15,7 @@ class MicLevelMonitor: ObservableObject {
     func start() {
         guard !isRunning else { return }
         // Only start if mic permission is already granted
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else { return }
+        guard PermissionChecker.microphoneStatus() == .authorized else { return }
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let format = inputNode.outputFormat(forBus: 0)
@@ -205,13 +205,24 @@ struct SetupStep: View {
         micGranted && accessibilityGranted && modelManager.isReady
     }
 
+    private var modelRows: [RuntimeModelRow] {
+        RuntimeModelInventory.rows(
+            selectedSpeechModelName: appState.speechModel,
+            activeSpeechModelName: modelManager.modelName,
+            speechModelState: modelManager.state,
+            cachedSpeechModelNames: modelManager.cachedModelNames,
+            cleanupState: appState.textCleanupManager.state,
+            loadedCleanupKinds: appState.textCleanupManager.loadedModelKinds
+        )
+    }
+
     var body: some View {
         VStack(spacing: 16) {
             Text("Setup 🌶️")
                 .font(.system(size: 24, weight: .bold))
                 .padding(.top, 24)
 
-            Text("Grant permissions and download the speech model")
+            Text("Grant permissions and download the app models")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -344,9 +355,7 @@ struct SetupStep: View {
                         title: "AI Models",
                         subtitle: modelManager.state == .error
                             ? "Download failed"
-                            : modelManager.isReady
-                                ? "Ready"
-                                : "Downloading & compiling (may take a few minutes)...",
+                            : RuntimeModelInventory.activeDownloadText(rows: modelRows) ?? (modelManager.isReady ? "Ready" : "Waiting to download model"),
                         isComplete: modelManager.isReady
                     ) {
                         if modelManager.state == .loading {
@@ -362,21 +371,7 @@ struct SetupStep: View {
                         }
                     }
 
-                    if modelManager.state == .loading {
-                        VStack(spacing: 6) {
-                            EmojiProgressBar()
-                            VStack(alignment: .leading, spacing: 3) {
-                                ModelStageRow(name: "WhisperKit (speech-to-text)", size: "~500 MB", isDone: false, isActive: true)
-                                ModelStageRow(name: "Qwen 2.5 1.5B (fast cleanup)", size: "~1 GB", isDone: false, isActive: false)
-                                ModelStageRow(name: "Qwen 2.5 3B (full cleanup)", size: "~2 GB", isDone: false, isActive: false)
-                            }
-                        }
-                        .padding(10)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color(nsColor: .controlBackgroundColor))
-                        )
-                    }
+                    ModelInventoryCard(rows: modelRows)
                 }
             }
             .padding(.horizontal, 24)
@@ -414,8 +409,9 @@ struct SetupStep: View {
             }
         }
         .onAppear {
-            micGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-            micDenied = AVCaptureDevice.authorizationStatus(for: .audio) == .denied
+            let microphoneStatus = PermissionChecker.microphoneStatus()
+            micGranted = microphoneStatus == .authorized
+            micDenied = microphoneStatus == .denied
             accessibilityGranted = PermissionChecker.checkAccessibility()
 
             if micGranted {
@@ -514,11 +510,11 @@ class TryItController: ObservableObject {
     private var hasAdvanced = false
     private var retryCount = 0
     private let maxRetries = 5
-    private let transcriber: WhisperTranscriber
+    private let transcriber: SpeechTranscriber
     private let hotkeyMonitorFactory: ([ChordAction: KeyChord]) -> HotkeyMonitoring
 
     init(
-        transcriber: WhisperTranscriber,
+        transcriber: SpeechTranscriber,
         hotkeyMonitorFactory: @escaping ([ChordAction: KeyChord]) -> HotkeyMonitoring = { bindings in
             HotkeyMonitor(bindings: bindings)
         }
@@ -799,85 +795,6 @@ struct DoneStep: View {
             .tint(.orange)
             .padding(.horizontal, 40)
             .padding(.bottom, 24)
-        }
-    }
-}
-
-struct ModelStageRow: View {
-    let name: String
-    let size: String
-    let isDone: Bool
-    let isActive: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            if isDone {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.caption2)
-            } else if isActive {
-                ProgressView()
-                    .controlSize(.mini)
-                    .scaleEffect(0.6)
-                    .frame(width: 12, height: 12)
-            } else {
-                Image(systemName: "circle")
-                    .foregroundStyle(.quaternary)
-                    .font(.caption2)
-            }
-            Text(name)
-                .font(.caption2)
-                .foregroundStyle(isActive ? .primary : .secondary)
-            Spacer()
-            Text(size)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
-}
-
-struct EmojiProgressBar: View {
-    private let emojis = ["🌶️", "👻", "🔥"]
-    private let maxSlots = 15
-    @State private var filledCount = 0
-    @State private var timer: Timer?
-
-    var body: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .leading) {
-                // Background track
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color(nsColor: .separatorColor).opacity(0.3))
-
-                // Filled portion with emojis
-                HStack(spacing: 0) {
-                    ForEach(0..<filledCount, id: \.self) { i in
-                        Text(emojis[i % emojis.count])
-                            .font(.system(size: 13))
-                            .frame(width: geo.size.width / CGFloat(maxSlots), height: geo.size.height)
-                    }
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: 22)
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-        .onAppear {
-            timer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
-                DispatchQueue.main.async {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if filledCount >= maxSlots {
-                            filledCount = 0
-                        } else {
-                            filledCount += 1
-                        }
-                    }
-                }
-            }
-        }
-        .onDisappear {
-            timer?.invalidate()
-            timer = nil
         }
     }
 }

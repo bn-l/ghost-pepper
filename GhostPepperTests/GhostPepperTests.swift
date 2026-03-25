@@ -45,6 +45,18 @@ private final class FakeAppRelauncher: AppRelaunching {
 
 @MainActor
 final class GhostPepperTests: XCTestCase {
+    private func makeDebugLogStore() -> DebugLogStore {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("debug-log.json")
+        return DebugLogStore(storageURL: fileURL)
+    }
+
+    override func tearDown() {
+        PermissionChecker.current = PermissionChecker.defaultClient
+        super.tearDown()
+    }
+
     func testAppStateInitialStatus() {
         // AppState is @MainActor so we test basic enum
         XCTAssertEqual(AppStatus.ready.rawValue, "Ready")
@@ -149,7 +161,7 @@ final class GhostPepperTests: XCTestCase {
         XCTAssertEqual(monitor.startCallCount, 1)
     }
 
-    func testAppStateStartHotkeyMonitorRequiresInputMonitoringBeforeStartingTap() async throws {
+    func testAppStateStartHotkeyMonitorPromptsForInputMonitoringButStillStartsWhenMonitorCanRun() async throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let monitor = FakeHotkeyMonitor()
@@ -163,10 +175,10 @@ final class GhostPepperTests: XCTestCase {
 
         await appState.startHotkeyMonitor()
 
-        XCTAssertEqual(monitor.startCallCount, 0)
+        XCTAssertEqual(monitor.startCallCount, 1)
         XCTAssertEqual(requestCount, 1)
-        XCTAssertEqual(appState.status, .error)
-        XCTAssertEqual(appState.errorMessage, "Input Monitoring access required — grant permission then click Retry")
+        XCTAssertEqual(appState.status, .ready)
+        XCTAssertNil(appState.errorMessage)
     }
 
     func testAppStateUpdateShortcutRefreshesHotkeyMonitorBindings() throws {
@@ -541,7 +553,7 @@ final class GhostPepperTests: XCTestCase {
         closeWindows(titled: "Ghost Pepper Debug Log")
         defer { closeWindows(titled: "Ghost Pepper Debug Log") }
         let controller = DebugLogWindowController()
-        let debugLogStore = DebugLogStore()
+        let debugLogStore = makeDebugLogStore()
 
         controller.show(debugLogStore: debugLogStore)
         let window = try XCTUnwrap(
@@ -671,7 +683,7 @@ final class GhostPepperTests: XCTestCase {
     func testAppStateRecordsCleanupDebugSnapshotOnlyWhileDebugViewerIsOpen() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
-        let debugLogStore = DebugLogStore()
+        let debugLogStore = makeDebugLogStore()
         let appState = AppState(
             hotkeyMonitor: FakeHotkeyMonitor(),
             chordBindingStore: ChordBindingStore(defaults: defaults),
@@ -681,9 +693,7 @@ final class GhostPepperTests: XCTestCase {
 
         appState.recordCleanupDebugSnapshot(
             rawTranscription: "raw text",
-            basePrompt: "base prompt",
             windowContext: OCRContext(windowContents: "window text"),
-            resolvedPrompt: "resolved prompt",
             cleanedOutput: "cleaned text",
             attemptedCleanup: true
         )
@@ -692,9 +702,7 @@ final class GhostPepperTests: XCTestCase {
         debugLogStore.beginLiveViewing()
         appState.recordCleanupDebugSnapshot(
             rawTranscription: "raw text",
-            basePrompt: "base prompt",
             windowContext: OCRContext(windowContents: "window text"),
-            resolvedPrompt: "resolved prompt",
             cleanedOutput: "cleaned text",
             attemptedCleanup: true
         )
@@ -702,9 +710,7 @@ final class GhostPepperTests: XCTestCase {
 
         let formattedText = debugLogStore.formattedText
         XCTAssertTrue(formattedText.contains("raw text"))
-        XCTAssertTrue(formattedText.contains("window text"))
-        XCTAssertTrue(formattedText.contains("base prompt"))
-        XCTAssertTrue(formattedText.contains("resolved prompt"))
+        XCTAssertTrue(formattedText.contains("windowContext=captured"))
         XCTAssertTrue(formattedText.contains("cleaned text"))
     }
 
@@ -732,6 +738,28 @@ final class GhostPepperTests: XCTestCase {
         XCTAssertEqual(result, "Jesse approved it")
     }
 
+    func testAppStatePrepareForTerminationShutsDownCleanupBackend() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        var shutdownCount = 0
+        let cleanupManager = TextCleanupManager(
+            defaults: defaults,
+            backendShutdownOverride: {
+                shutdownCount += 1
+            }
+        )
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults,
+            textCleanupManager: cleanupManager
+        )
+
+        appState.prepareForTermination()
+
+        XCTAssertEqual(shutdownCount, 1)
+    }
+
     private func closeWindows(titled title: String) {
         NSApp.windows
             .filter { $0.title == title }
@@ -740,5 +768,34 @@ final class GhostPepperTests: XCTestCase {
                 window.orderOut(nil)
                 window.close()
             }
+    }
+
+    func testCheckMicrophoneUsesInjectedClientWithoutSystemPrompt() async {
+        var requestCount = 0
+        PermissionChecker.current = PermissionChecker.Client(
+            checkAccessibility: { false },
+            promptAccessibility: {},
+            microphoneStatus: { .notDetermined },
+            requestMicrophoneAccess: {
+                requestCount += 1
+                return true
+            },
+            openAccessibilitySettings: {},
+            openMicrophoneSettings: {}
+        )
+
+        let granted = await PermissionChecker.checkMicrophone()
+
+        XCTAssertTrue(granted)
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testDefaultClientIsNonInteractiveDuringTests() async {
+        PermissionChecker.current = PermissionChecker.defaultClient
+
+        let granted = await PermissionChecker.checkMicrophone()
+
+        XCTAssertFalse(granted)
+        XCTAssertEqual(PermissionChecker.microphoneStatus(), .denied)
     }
 }

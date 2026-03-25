@@ -3,8 +3,31 @@ import XCTest
 
 @MainActor
 final class DebugLogStoreTests: XCTestCase {
+    private func makeStore(maxEntries: Int = 250) -> DebugLogStore {
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("debug-log.json")
+        return DebugLogStore(maxEntries: maxEntries, storageURL: fileURL)
+    }
+
+    func testStorePersistsEntriesAcrossInstances() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let fileURL = directory.appendingPathComponent("debug-log.json")
+
+        do {
+            let firstStore = DebugLogStore(maxEntries: 10, storageURL: fileURL)
+            firstStore.record(category: .performance, message: "session complete")
+        }
+
+        let secondStore = DebugLogStore(maxEntries: 10, storageURL: fileURL)
+
+        XCTAssertEqual(secondStore.entries.map(\.message), ["session complete"])
+    }
+
     func testStoreDropsOldestEntriesWhenCapacityIsExceeded() {
-        let store = DebugLogStore(maxEntries: 2)
+        let store = makeStore(maxEntries: 2)
 
         store.record(category: .hotkey, message: "first")
         store.record(category: .ocr, message: "second")
@@ -15,7 +38,7 @@ final class DebugLogStoreTests: XCTestCase {
     }
 
     func testClearRemovesFormattedLogOutput() {
-        let store = DebugLogStore(maxEntries: 2)
+        let store = makeStore(maxEntries: 2)
 
         store.record(category: .model, message: "loaded")
         store.clear()
@@ -25,7 +48,7 @@ final class DebugLogStoreTests: XCTestCase {
     }
 
     func testSensitiveEntriesAreIgnoredWhenNoDebugViewerIsOpen() {
-        let store = DebugLogStore()
+        let store = makeStore()
 
         store.recordSensitive(category: .cleanup, message: "full prompt")
 
@@ -33,7 +56,7 @@ final class DebugLogStoreTests: XCTestCase {
     }
 
     func testSensitiveEntriesAreRecordedOnlyWhileDebugViewerIsOpen() {
-        let store = DebugLogStore()
+        let store = makeStore()
 
         store.beginLiveViewing()
         store.recordSensitive(category: .cleanup, message: "full prompt")

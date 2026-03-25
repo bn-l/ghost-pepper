@@ -24,6 +24,8 @@ final class TextPaster {
 
     private static let vKeyCode: CGKeyCode = 0x09
     var onPaste: ((PasteSession) -> Void)?
+    var onPasteStart: (() -> Void)?
+    var onPasteEnd: (() -> Void)?
 
     private let pasteSessionProvider: PasteSessionProvider
 
@@ -92,6 +94,7 @@ final class TextPaster {
     ///
     /// - Parameter text: The text to paste.
     func paste(text: String) {
+        onPasteStart?()
         let savedState = saveClipboard()
 
         let pasteboard = NSPasteboard.general
@@ -109,6 +112,8 @@ final class TextPaster {
                 if let savedState = savedState {
                     self?.restoreClipboard(savedState)
                 }
+
+                self?.onPasteEnd?()
             }
         }
     }
