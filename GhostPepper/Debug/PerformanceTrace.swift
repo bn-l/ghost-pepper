@@ -12,6 +12,10 @@ struct PerformanceTrace {
     var transcriptionEndAt: Date?
     var cleanupStartAt: Date?
     var cleanupEndAt: Date?
+    var ocrCaptureDuration: TimeInterval?
+    var promptBuildDuration: TimeInterval?
+    var modelCallDuration: TimeInterval?
+    var postProcessDuration: TimeInterval?
     var pasteStartAt: Date?
     var pasteEndAt: Date?
 
@@ -35,6 +39,18 @@ struct PerformanceTrace {
             cleanupAttempted
                 ? "cleanup=\(duration(from: cleanupStartAt, to: cleanupEndAt))"
                 : "cleanup=skipped",
+            cleanupAttempted
+                ? "ocr=\(duration(ocrCaptureDuration))"
+                : "ocr=skipped",
+            cleanupAttempted
+                ? "prompt_build=\(duration(promptBuildDuration))"
+                : "prompt_build=skipped",
+            cleanupAttempted
+                ? "model_call=\(duration(modelCallDuration))"
+                : "model_call=skipped",
+            cleanupAttempted
+                ? "post_process=\(duration(postProcessDuration))"
+                : "post_process=skipped",
             "paste=\(duration(from: pasteStartAt, to: pasteEndAt))",
             "total=\(duration(from: startedAt, to: pasteEndAt))"
         ]
@@ -56,6 +72,14 @@ struct PerformanceTrace {
         }
 
         return Self.format(duration: end.timeIntervalSince(start))
+    }
+
+    private func duration(_ duration: TimeInterval?) -> String {
+        guard let duration else {
+            return "n/a"
+        }
+
+        return Self.format(duration: duration)
     }
 
     private static func format(duration: TimeInterval) -> String {

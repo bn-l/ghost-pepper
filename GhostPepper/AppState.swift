@@ -399,7 +399,9 @@ class AppState: ObservableObject {
                 overlay.show(message: .cleaningUp)
 
                 if frontmostWindowContextEnabled {
+                    let ocrCaptureStart = Date()
                     windowContext = await frontmostWindowOCRService.captureContext(customWords: ocrCustomWords)
+                    activePerformanceTrace?.ocrCaptureDuration = Date().timeIntervalSince(ocrCaptureStart)
                     if windowContext == nil {
                         debugLogStore.record(category: .ocr, message: "No frontmost-window OCR context was captured.")
                     }
@@ -490,6 +492,7 @@ class AppState: ObservableObject {
 
         let activeCleanupPrompt: String
         if canAttemptCleanup {
+            let promptBuildStart = Date()
             activeCleanupPrompt = cleanupPromptBuilder.buildPrompt(
                 basePrompt: cleanupPrompt,
                 windowContext: windowContext,
@@ -497,12 +500,15 @@ class AppState: ObservableObject {
                 commonlyMisheard: correctionStore.commonlyMisheard,
                 includeWindowContext: frontmostWindowContextEnabled
             )
+            activePerformanceTrace?.promptBuildDuration = Date().timeIntervalSince(promptBuildStart)
         } else {
             activeCleanupPrompt = cleanupPrompt
         }
 
-        let cleanedText = await textCleaner.clean(text: text, prompt: activeCleanupPrompt)
-        return (text: cleanedText, prompt: activeCleanupPrompt, attemptedCleanup: canAttemptCleanup)
+        let cleanedResult = await textCleaner.cleanWithPerformance(text: text, prompt: activeCleanupPrompt)
+        activePerformanceTrace?.modelCallDuration = cleanedResult.performance.modelCallDuration
+        activePerformanceTrace?.postProcessDuration = cleanedResult.performance.postProcessDuration
+        return (text: cleanedResult.text, prompt: activeCleanupPrompt, attemptedCleanup: canAttemptCleanup)
     }
 
     var ocrCustomWords: [String] {

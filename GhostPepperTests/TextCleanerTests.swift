@@ -181,4 +181,25 @@ final class TextCleanerTests: XCTestCase {
         XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Final cleaned output") }))
         XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Post-cleanup corrections") }))
     }
+
+    func testCleanerReportsModelAndPostProcessingDurations() async {
+        let localBackend = SpyCleanupBackend(
+            nextResult: .success(
+                """
+                <think>
+                internal reasoning
+                </think>
+
+                Final cleaned text
+                """
+            )
+        )
+        let cleaner = TextCleaner(localBackend: localBackend)
+
+        let result = await cleaner.cleanWithPerformance(text: "raw text", prompt: "unused prompt")
+
+        XCTAssertEqual(result.text, "Final cleaned text")
+        XCTAssertNotNil(result.performance.modelCallDuration)
+        XCTAssertNotNil(result.performance.postProcessDuration)
+    }
 }

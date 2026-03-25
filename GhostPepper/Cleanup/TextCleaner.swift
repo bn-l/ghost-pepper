@@ -1,5 +1,15 @@
 import Foundation
 
+struct TextCleanerPerformance {
+    let modelCallDuration: TimeInterval?
+    let postProcessDuration: TimeInterval?
+}
+
+struct TextCleanerResult {
+    let text: String
+    let performance: TextCleanerPerformance
+}
+
 final class TextCleaner {
     private static let thinkBlockExpression = try? NSRegularExpression(
         pattern: #"(?is)<think\b[^>]*>.*?</think>"#
@@ -59,6 +69,12 @@ final class TextCleaner {
 
     @MainActor
     func clean(text: String, prompt: String? = nil) async -> String {
+        let result = await cleanWithPerformance(text: text, prompt: prompt)
+        return result.text
+    }
+
+    @MainActor
+    func cleanWithPerformance(text: String, prompt: String? = nil) async -> TextCleanerResult {
         let activePrompt = prompt ?? Self.defaultPrompt
         let correctionEngine = DeterministicCorrectionEngine(
             preferredTranscriptions: correctionStore.preferredTranscriptions,
@@ -82,7 +98,10 @@ final class TextCleaner {
         }
 
         do {
+            let modelCallStart = Date()
             let cleanedText = try await localBackend.clean(text: correctedText, prompt: activePrompt)
+            let modelCallDuration = Date().timeIntervalSince(modelCallStart)
+            let postProcessStart = Date()
             let sanitizedText = Self.sanitizeCleanupOutput(cleanedText)
 
             if sanitizedText != cleanedText {
@@ -112,9 +131,16 @@ final class TextCleaner {
                     """
                 )
             }
-            return finalText
+            return TextCleanerResult(
+                text: finalText,
+                performance: TextCleanerPerformance(
+                    modelCallDuration: modelCallDuration,
+                    postProcessDuration: Date().timeIntervalSince(postProcessStart)
+                )
+            )
         } catch {
             debugLogger?(.cleanup, "Cleanup backend unavailable, returning deterministic corrections only.")
+            let postProcessStart = Date()
             let finalText = correctionEngine.applyPostCleanupCorrections(to: correctedText)
             if finalText == correctedText {
                 sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
@@ -131,7 +157,13 @@ final class TextCleaner {
                     """
                 )
             }
-            return finalText
+            return TextCleanerResult(
+                text: finalText,
+                performance: TextCleanerPerformance(
+                    modelCallDuration: nil,
+                    postProcessDuration: Date().timeIntervalSince(postProcessStart)
+                )
+            )
         }
     }
 

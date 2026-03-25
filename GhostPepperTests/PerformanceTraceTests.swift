@@ -15,6 +15,10 @@ final class PerformanceTraceTests: XCTestCase {
         trace.transcriptionEndAt = startedAt.addingTimeInterval(2.05)
         trace.cleanupStartAt = startedAt.addingTimeInterval(2.05)
         trace.cleanupEndAt = startedAt.addingTimeInterval(2.42)
+        trace.ocrCaptureDuration = 0.41
+        trace.promptBuildDuration = 0.02
+        trace.modelCallDuration = 0.64
+        trace.postProcessDuration = 0.21
         trace.pasteStartAt = startedAt.addingTimeInterval(2.43)
         trace.pasteEndAt = startedAt.addingTimeInterval(2.59)
 
@@ -30,6 +34,10 @@ final class PerformanceTraceTests: XCTestCase {
         XCTAssertTrue(summary.contains("hotkey_lift_to_mic_cold=250ms"))
         XCTAssertTrue(summary.contains("transcription=500ms"))
         XCTAssertTrue(summary.contains("cleanup=370ms"))
+        XCTAssertTrue(summary.contains("ocr=410ms"))
+        XCTAssertTrue(summary.contains("prompt_build=20ms"))
+        XCTAssertTrue(summary.contains("model_call=640ms"))
+        XCTAssertTrue(summary.contains("post_process=210ms"))
         XCTAssertTrue(summary.contains("paste=160ms"))
         XCTAssertTrue(summary.contains("total=2590ms"))
     }
