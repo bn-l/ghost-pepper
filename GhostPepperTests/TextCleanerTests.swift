@@ -2,15 +2,15 @@ import XCTest
 @testable import GhostPepper
 
 private final class SpyCleanupBackend: CleanupBackend {
-    var cleanedInputs: [(text: String, prompt: String)] = []
+    var cleanedInputs: [(text: String, prompt: String, modelKind: LocalCleanupModelKind?)] = []
     var nextResult: Result<String, Error>
 
     init(nextResult: Result<String, Error>) {
         self.nextResult = nextResult
     }
 
-    func clean(text: String, prompt: String) async throws -> String {
-        cleanedInputs.append((text: text, prompt: prompt))
+    func clean(text: String, prompt: String, modelKind: LocalCleanupModelKind?) async throws -> String {
+        cleanedInputs.append((text: text, prompt: prompt, modelKind: modelKind))
         return try nextResult.get()
     }
 }
@@ -201,5 +201,18 @@ final class TextCleanerTests: XCTestCase {
         XCTAssertEqual(result.text, "Final cleaned text")
         XCTAssertNotNil(result.performance.modelCallDuration)
         XCTAssertNotNil(result.performance.postProcessDuration)
+    }
+
+    func testCleanerCanForceSpecificCleanupModelKind() async {
+        let localBackend = SpyCleanupBackend(nextResult: .success("cleaned"))
+        let cleaner = TextCleaner(localBackend: localBackend)
+
+        _ = await cleaner.cleanWithPerformance(
+            text: "raw text",
+            prompt: "unused prompt",
+            modelKind: .fast
+        )
+
+        XCTAssertEqual(localBackend.cleanedInputs.map(\.modelKind), [.fast])
     }
 }

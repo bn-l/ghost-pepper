@@ -24,7 +24,7 @@ enum CleanupModelState: Equatable {
 }
 
 protocol TextCleaningManaging: AnyObject {
-    func clean(text: String, prompt: String?) async -> String?
+    func clean(text: String, prompt: String?, modelKind: LocalCleanupModelKind?) async -> String?
 }
 
 typealias CleanupModelProbeExecutionOverride = @MainActor (
@@ -187,11 +187,11 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
         modelsDirectory.appendingPathComponent(fileName)
     }
 
-    func clean(text: String, prompt: String? = nil) async -> String? {
+    func clean(text: String, prompt: String? = nil, modelKind: LocalCleanupModelKind? = nil) async -> String? {
         let wordCount = text.split(separator: " ").count
         let isQuestion = text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
 
-        guard let modelKind = selectedModelKind(wordCount: wordCount, isQuestion: isQuestion) else {
+        guard let modelKind = modelKind ?? selectedModelKind(wordCount: wordCount, isQuestion: isQuestion) else {
             debugLogger?(
                 .cleanup,
                 "Skipped local cleanup because no usable model was ready for policy \(localModelPolicy.rawValue)."

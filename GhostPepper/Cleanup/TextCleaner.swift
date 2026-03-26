@@ -76,7 +76,11 @@ final class TextCleaner {
     }
 
     @MainActor
-    func cleanWithPerformance(text: String, prompt: String? = nil) async -> TextCleanerResult {
+    func cleanWithPerformance(
+        text: String,
+        prompt: String? = nil,
+        modelKind: LocalCleanupModelKind? = nil
+    ) async -> TextCleanerResult {
         let activePrompt = prompt ?? Self.defaultPrompt
         let correctionEngine = DeterministicCorrectionEngine(
             preferredTranscriptions: correctionStore.preferredTranscriptions,
@@ -101,7 +105,11 @@ final class TextCleaner {
 
         do {
             let modelCallStart = Date()
-            let cleanedText = try await localBackend.clean(text: correctedText, prompt: activePrompt)
+            let cleanedText = try await localBackend.clean(
+                text: correctedText,
+                prompt: activePrompt,
+                modelKind: modelKind
+            )
             let modelCallDuration = Date().timeIntervalSince(modelCallStart)
             let postProcessStart = Date()
             let sanitizedText = Self.sanitizeCleanupOutput(cleanedText)
