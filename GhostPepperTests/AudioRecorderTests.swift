@@ -13,4 +13,13 @@ final class AudioRecorderTests: XCTestCase {
         recorder.resetBuffer()
         XCTAssertTrue(recorder.audioBuffer.isEmpty)
     }
+
+    func testAudioBufferSerializationRoundTripsSamples() throws {
+        let samples: [Float] = [0.25, -0.5, 0.75, 0.0]
+
+        let data = try AudioRecorder.serializeAudioBuffer(samples)
+        let decoded = try AudioRecorder.deserializeAudioBuffer(from: data)
+
+        XCTAssertEqual(decoded, samples)
+    }
 }

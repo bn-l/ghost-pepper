@@ -22,6 +22,24 @@ final class AudioRecorder {
         engine.prepare()
     }
 
+    static func serializeAudioBuffer(_ samples: [Float]) throws -> Data {
+        samples.withUnsafeBufferPointer { buffer in
+            Data(buffer: buffer)
+        }
+    }
+
+    static func deserializeAudioBuffer(from data: Data) throws -> [Float] {
+        let stride = MemoryLayout<Float>.stride
+        guard data.count.isMultiple(of: stride) else {
+            throw AudioRecorderPersistenceError.invalidSerializedAudioData
+        }
+
+        return data.withUnsafeBytes { rawBuffer in
+            let floatBuffer = rawBuffer.bindMemory(to: Float.self)
+            return Array(floatBuffer)
+        }
+    }
+
     /// Clears the in-memory audio buffer.
     func resetBuffer() {
         bufferLock.lock()
@@ -135,4 +153,8 @@ enum AudioRecorderError: Error, LocalizedError {
             return "Failed to create audio format converter."
         }
     }
+}
+
+enum AudioRecorderPersistenceError: Error {
+    case invalidSerializedAudioData
 }
