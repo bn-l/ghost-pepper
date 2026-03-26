@@ -52,14 +52,10 @@ final class TranscriptionLabController: ObservableObject {
                 return
             }
 
-            if let newestEntry = loadedEntries.first {
-                selectEntry(newestEntry.id)
-            } else {
-                selectedEntryID = nil
-                experimentRawTranscription = ""
-                experimentCorrectedTranscription = ""
-                errorMessage = nil
-            }
+            selectedEntryID = nil
+            experimentRawTranscription = ""
+            experimentCorrectedTranscription = ""
+            errorMessage = nil
         } catch {
             entries = []
             selectedEntryID = nil
@@ -77,6 +73,13 @@ final class TranscriptionLabController: ObservableObject {
         selectedEntryID = id
         selectedSpeechModelID = SpeechModelCatalog.model(named: entry.speechModelID)?.name ?? selectedSpeechModelID
         selectedCleanupModelKind = Self.cleanupModelKind(for: entry)
+        experimentRawTranscription = ""
+        experimentCorrectedTranscription = ""
+        errorMessage = nil
+    }
+
+    func closeDetail() {
+        selectedEntryID = nil
         experimentRawTranscription = ""
         experimentCorrectedTranscription = ""
         errorMessage = nil

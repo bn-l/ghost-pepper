@@ -632,176 +632,170 @@ struct SettingsView: View {
     }
 
     private var transcriptionLabSection: some View {
-        HSplitView {
-            SettingsCard("Saved recordings") {
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Ghost Pepper keeps the 50 most recent completed recordings with audio for reruns and comparisons.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 24) {
+            if let selectedEntry = transcriptionLabController.selectedEntry {
+                transcriptionLabDetail(for: selectedEntry)
+            } else {
+                transcriptionLabBrowser
+            }
+        }
+    }
 
-                        Spacer(minLength: 12)
+    private var transcriptionLabBrowser: some View {
+        SettingsCard("Recent recordings") {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 12) {
+                    Text("Choose a saved recording to open the lab for that transcription.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                        Button("Refresh") {
-                            transcriptionLabController.reloadEntries()
+                    Spacer(minLength: 12)
+
+                    Button("Refresh") {
+                        transcriptionLabController.reloadEntries()
+                    }
+                    .buttonStyle(.bordered)
+                }
+
+                if transcriptionLabController.entries.isEmpty {
+                    ContentUnavailableView(
+                        "No Saved Recordings",
+                        systemImage: "waveform",
+                        description: Text("Make a few dictations in Ghost Pepper and they will appear here.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 280)
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(transcriptionLabController.entries) { entry in
+                            Button {
+                                transcriptionLabController.selectEntry(entry.id)
+                            } label: {
+                                CompactTranscriptionLabEntryRow(entry: entry)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func transcriptionLabDetail(for entry: TranscriptionLabEntry) -> some View {
+        VStack(alignment: .leading, spacing: 24) {
+            HStack(alignment: .center, spacing: 12) {
+                Button {
+                    transcriptionLabController.closeDetail()
+                } label: {
+                    Label("Back to recordings", systemImage: "chevron.left")
+                }
+                .buttonStyle(.bordered)
+
+                Spacer(minLength: 12)
+
+                Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            SettingsCard("Original") {
+                VStack(alignment: .leading, spacing: 16) {
+                    TranscriptionLabMetadataSummary(entry: entry)
+
+                    TranscriptionLabResultStack(
+                        rawTitle: "Raw transcription",
+                        rawText: entry.rawTranscription ?? "No transcription was captured for this recording.",
+                        correctedTitle: "Corrected transcription",
+                        correctedText: entry.correctedTranscription ?? "No corrected output was captured for this recording."
+                    )
+
+                    if let windowContents = entry.windowContext?.windowContents,
+                       !windowContents.isEmpty {
+                        DisclosureGroup("Show captured OCR context") {
+                            ReadOnlyTextPane(text: windowContents, minHeight: 120, monospaced: true)
+                                .padding(.top, 10)
+                        }
+                        .font(.callout)
+                    }
+                }
+            }
+
+            SettingsCard("Experiment") {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack(alignment: .top, spacing: 16) {
+                        SettingsField("Speech model") {
+                            Picker("Speech Model", selection: $transcriptionLabController.selectedSpeechModelID) {
+                                ForEach(ModelManager.availableModels) { model in
+                                    Text(model.pickerLabel).tag(model.name)
+                                }
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 360, alignment: .leading)
+                        }
+
+                        SettingsField("Cleanup model") {
+                            Picker("Cleanup model", selection: $transcriptionLabController.selectedCleanupModelKind) {
+                                Text(TextCleanupManager.fastModel.displayName).tag(LocalCleanupModelKind.fast)
+                                Text(TextCleanupManager.fullModel.displayName).tag(LocalCleanupModelKind.full)
+                            }
+                            .labelsHidden()
+                            .frame(maxWidth: 320, alignment: .leading)
+                        }
+                    }
+
+                    HStack(spacing: 12) {
+                        Button {
+                            Task {
+                                await transcriptionLabController.rerun(prompt: appState.cleanupPrompt)
+                            }
+                        } label: {
+                            HStack {
+                                if transcriptionLabController.isRunning {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else {
+                                    Image(systemName: "arrow.trianglehead.clockwise")
+                                }
+                                Text(transcriptionLabController.isRunning ? "Rerunning..." : "Rerun Recording")
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(transcriptionLabController.isRunning)
+
+                        Button("Reset Prompt to Default") {
+                            appState.cleanupPrompt = TextCleaner.defaultPrompt
                         }
                         .buttonStyle(.bordered)
+                        .disabled(transcriptionLabController.isRunning)
                     }
 
-                    if transcriptionLabController.entries.isEmpty {
-                        ContentUnavailableView(
-                            "No Saved Recordings",
-                            systemImage: "waveform",
-                            description: Text("Make a few dictations in Ghost Pepper and they will appear here.")
-                        )
-                        .frame(maxWidth: .infinity, minHeight: 320)
-                    } else {
-                        ScrollView {
-                            VStack(alignment: .leading, spacing: 8) {
-                                ForEach(transcriptionLabController.entries) { entry in
-                                    Button {
-                                        transcriptionLabController.selectEntry(entry.id)
-                                    } label: {
-                                        TranscriptionLabEntryRow(
-                                            entry: entry,
-                                            isSelected: transcriptionLabController.selectedEntryID == entry.id
-                                        )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                            .padding(.vertical, 2)
-                        }
-                    }
-                }
-            }
-            .frame(minWidth: 280, idealWidth: 320, maxWidth: 340, maxHeight: .infinity, alignment: .topLeading)
-
-            VStack(alignment: .leading, spacing: 24) {
-                if let selectedEntry = transcriptionLabController.selectedEntry {
-                    SettingsCard("Original") {
-                        TranscriptionLabResultStack(
-                            rawTitle: "Raw transcription",
-                            rawText: selectedEntry.rawTranscription ?? "No transcription was captured for this recording.",
-                            correctedTitle: "Corrected transcription",
-                            correctedText: selectedEntry.correctedTranscription ?? "No corrected output was captured for this recording."
-                        ) {
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Original run")
-                                    .font(.subheadline.weight(.medium))
-                                TranscriptionLabMetadataRow(
-                                    label: "When",
-                                    value: selectedEntry.createdAt.formatted(date: .abbreviated, time: .shortened)
-                                )
-                                TranscriptionLabMetadataRow(
-                                    label: "Audio length",
-                                    value: String(format: "%.1fs", selectedEntry.audioDuration)
-                                )
-                                TranscriptionLabMetadataRow(
-                                    label: "Speech model",
-                                    value: SpeechModelCatalog.model(named: selectedEntry.speechModelID)?.statusName ?? selectedEntry.speechModelID
-                                )
-                                TranscriptionLabMetadataRow(
-                                    label: "Cleanup model",
-                                    value: selectedEntry.cleanupModelName
-                                )
-                                if let windowContents = selectedEntry.windowContext?.windowContents,
-                                   !windowContents.isEmpty {
-                                    VStack(alignment: .leading, spacing: 6) {
-                                        Text("Captured OCR context")
-                                            .font(.subheadline.weight(.medium))
-                                        ReadOnlyTextPane(text: windowContents, minHeight: 96, monospaced: true)
-                                    }
-                                }
-                            }
-                        }
+                    SettingsField("Cleanup prompt") {
+                        BorderedTextEditor(text: $appState.cleanupPrompt, minHeight: 180)
                     }
 
-                    SettingsCard("Experiment") {
-                        VStack(alignment: .leading, spacing: 18) {
-                            SettingsField("Speech model") {
-                                Picker("Speech Model", selection: $transcriptionLabController.selectedSpeechModelID) {
-                                    ForEach(ModelManager.availableModels) { model in
-                                        Text(model.pickerLabel).tag(model.name)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(maxWidth: 420, alignment: .leading)
-                            }
-
-                            SettingsField("Cleanup model") {
-                                Picker("Cleanup model", selection: $transcriptionLabController.selectedCleanupModelKind) {
-                                    Text(TextCleanupManager.fastModel.displayName).tag(LocalCleanupModelKind.fast)
-                                    Text(TextCleanupManager.fullModel.displayName).tag(LocalCleanupModelKind.full)
-                                }
-                                .labelsHidden()
-                                .frame(maxWidth: 420, alignment: .leading)
-                            }
-
-                            SettingsField("Cleanup prompt") {
-                                BorderedTextEditor(text: $appState.cleanupPrompt, minHeight: 180)
-                            }
-
-                            HStack(spacing: 12) {
-                                Button {
-                                    Task {
-                                        await transcriptionLabController.rerun(prompt: appState.cleanupPrompt)
-                                    }
-                                } label: {
-                                    HStack {
-                                        if transcriptionLabController.isRunning {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                        } else {
-                                            Image(systemName: "arrow.trianglehead.clockwise")
-                                        }
-                                        Text(transcriptionLabController.isRunning ? "Rerunning..." : "Rerun Recording")
-                                    }
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .disabled(transcriptionLabController.isRunning)
-
-                                Button("Reset Prompt to Default") {
-                                    appState.cleanupPrompt = TextCleaner.defaultPrompt
-                                }
-                                .buttonStyle(.bordered)
-                                .disabled(transcriptionLabController.isRunning)
-                            }
-
-                            if let errorMessage = transcriptionLabController.errorMessage {
-                                Text(errorMessage)
-                                    .font(.callout)
-                                    .foregroundStyle(.red)
-                            }
-
-                            Text("The lab reuses the original audio and OCR context, never pastes into another app, and temporarily owns Ghost Pepper's transcription pipeline while it reruns.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            TranscriptionLabResultStack(
-                                rawTitle: "Experiment raw transcription",
-                                rawText: transcriptionLabController.experimentRawTranscription.isEmpty
-                                    ? "Run the selected recording through a speech model to see the raw transcript here."
-                                    : transcriptionLabController.experimentRawTranscription,
-                                correctedTitle: "Experiment corrected transcription",
-                                correctedText: transcriptionLabController.experimentCorrectedTranscription.isEmpty
-                                    ? "The cleanup result will appear here after the rerun finishes."
-                                    : transcriptionLabController.experimentCorrectedTranscription
-                            )
-                        }
+                    if let errorMessage = transcriptionLabController.errorMessage {
+                        Text(errorMessage)
+                            .font(.callout)
+                            .foregroundStyle(.red)
                     }
-                } else {
-                    ContentUnavailableView(
-                        "Choose a Saved Recording",
-                        systemImage: "waveform.badge.magnifyingglass",
-                        description: Text("Pick a recording on the left to compare its original transcription with new speech and cleanup runs.")
+
+                    Text("The lab reuses the original audio and OCR context, never pastes into another app, and temporarily owns Ghost Pepper's transcription pipeline while it reruns.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    TranscriptionLabResultStack(
+                        rawTitle: "Experiment raw transcription",
+                        rawText: transcriptionLabController.experimentRawTranscription.isEmpty
+                            ? "Run the selected recording through a speech model to see the raw transcript here."
+                            : transcriptionLabController.experimentRawTranscription,
+                        correctedTitle: "Experiment corrected transcription",
+                        correctedText: transcriptionLabController.experimentCorrectedTranscription.isEmpty
+                            ? "The cleanup result will appear here after the rerun finishes."
+                            : transcriptionLabController.experimentCorrectedTranscription
                     )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
@@ -905,9 +899,8 @@ private struct CorrectionsEditor: View {
     }
 }
 
-private struct TranscriptionLabEntryRow: View {
+private struct CompactTranscriptionLabEntryRow: View {
     let entry: TranscriptionLabEntry
-    let isSelected: Bool
 
     private var titleText: String {
         if let corrected = entry.correctedTranscription, !corrected.isEmpty {
@@ -922,38 +915,40 @@ private struct TranscriptionLabEntryRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(entry.createdAt, style: .time)
-                    .font(.subheadline.weight(.medium))
-                Spacer(minLength: 8)
-                Text(String(format: "%.1fs", entry.audioDuration))
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(entry.createdAt, style: .time)
+                        .font(.subheadline.weight(.medium))
+                    Text(entry.createdAt, style: .date)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text(titleText)
+                    .font(.body)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text(SpeechModelCatalog.model(named: entry.speechModelID)?.statusName ?? entry.speechModelID)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
 
-            Text(titleText)
-                .font(.callout)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            Text(SpeechModelCatalog.model(named: entry.speechModelID)?.statusName ?? entry.speechModelID)
-                .font(.caption)
+            Text(String(format: "%.1fs", entry.audioDuration))
+                .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
         }
-        .padding(14)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .windowBackgroundColor))
+                .fill(Color(nsColor: .windowBackgroundColor))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(
-                    isSelected ? Color.accentColor.opacity(0.35) : Color(nsColor: .separatorColor),
-                    lineWidth: 1
-                )
+                .stroke(Color(nsColor: .separatorColor), lineWidth: 1)
         )
     }
 }
@@ -1026,6 +1021,22 @@ private struct TranscriptionLabMetadataRow: View {
             Text(value)
                 .font(.callout)
         }
+    }
+}
+
+private struct TranscriptionLabMetadataSummary: View {
+    let entry: TranscriptionLabEntry
+
+    var body: some View {
+        HStack(spacing: 18) {
+            Text(entry.createdAt.formatted(date: .abbreviated, time: .shortened))
+            Text(String(format: "%.1fs", entry.audioDuration))
+            Text(SpeechModelCatalog.model(named: entry.speechModelID)?.statusName ?? entry.speechModelID)
+            Text(entry.cleanupModelName)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 

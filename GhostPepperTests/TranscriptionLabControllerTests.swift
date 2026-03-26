@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class TranscriptionLabControllerTests: XCTestCase {
-    func testReloadEntriesSelectsNewestEntryAndSeedsExperimentDefaults() {
+    func testReloadEntriesSortsEntriesButStartsInBrowserMode() {
         let olderEntry = makeEntry(
             createdAt: Date(timeIntervalSince1970: 10),
             speechModelID: "openai_whisper-small.en",
@@ -31,8 +31,8 @@ final class TranscriptionLabControllerTests: XCTestCase {
         controller.reloadEntries()
 
         XCTAssertEqual(controller.entries.map(\.id), [newerEntry.id, olderEntry.id])
-        XCTAssertEqual(controller.selectedEntryID, newerEntry.id)
-        XCTAssertEqual(controller.selectedSpeechModelID, "fluid_parakeet-v3")
+        XCTAssertNil(controller.selectedEntryID)
+        XCTAssertEqual(controller.selectedSpeechModelID, SpeechModelCatalog.defaultModelID)
         XCTAssertEqual(controller.selectedCleanupModelKind, .full)
     }
 
@@ -61,6 +61,7 @@ final class TranscriptionLabControllerTests: XCTestCase {
             }
         )
         controller.reloadEntries()
+        controller.selectEntry(entry.id)
         controller.selectedSpeechModelID = "fluid_parakeet-v3"
         controller.selectedCleanupModelKind = .full
 
