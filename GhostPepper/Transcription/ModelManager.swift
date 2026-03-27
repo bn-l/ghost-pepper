@@ -118,7 +118,8 @@ final class ModelManager: ObservableObject {
             }
 
             return RecordingSessionCoordinator(
-                appendAudioChunk: { samples in
+                session: session,
+                processAudioChunk: { samples in
                     do {
                         _ = try diarizer.processSamples(samples)
                     } catch {
@@ -130,10 +131,10 @@ final class ModelManager: ObservableObject {
                 },
                 finish: {
                     diarizer.timeline.finalize()
-                    let spans = Self.diarizationSpans(from: diarizer.timeline.segments)
-                    let result = await session.finalize(spans: spans)
+                    return Self.diarizationSpans(from: diarizer.timeline.segments)
+                },
+                cleanup: {
                     diarizer.cleanup()
-                    return (filteredTranscript: result.filteredTranscript, summary: result.summary)
                 }
             )
         } catch {

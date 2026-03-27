@@ -19,6 +19,24 @@ final class RecordingSessionCoordinator {
     }
 
     init(
+        session: FluidAudioSpeechSession,
+        processAudioChunk: @escaping ([Float]) -> Void,
+        finish: @escaping () -> [DiarizationSummary.Span],
+        cleanup: @escaping () -> Void = {}
+    ) {
+        appendAudioChunkHandler = { samples in
+            session.appendAudioChunk(samples)
+            processAudioChunk(samples)
+        }
+        finishHandler = {
+            let result = await session.finalize(spans: finish())
+            cleanup()
+            return (filteredTranscript: result.filteredTranscript, summary: result.summary)
+        }
+        finishWithSpansHandler = nil
+    }
+
+    init(
         appendAudioChunk: @escaping ([Float]) -> Void,
         finish: @escaping () async -> FinalizationResult
     ) {
