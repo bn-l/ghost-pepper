@@ -5,6 +5,9 @@ import WhisperKit
 /// Manages local speech model lifecycle: download, load, and readiness state.
 @MainActor
 final class ModelManager: ObservableObject {
+    typealias ModelLoadOverride = @MainActor (SpeechModelDescriptor) async throws -> Void
+    typealias RetryDelayOverride = @MainActor () async -> Void
+
     private(set) var whisperKit: WhisperKit?
     private var fluidAudioManager: AsrManager?
     private var sortformerModels: SortformerModels?
@@ -20,6 +23,7 @@ final class ModelManager: ObservableObject {
     }
 
     static let availableModels = SpeechModelCatalog.availableModels
+    private static let retryDelayNanoseconds: UInt64 = 500_000_000
 
     var cachedModelNames: Set<String> {
         Self.availableModels.reduce(into: Set<String>()) { names, model in
@@ -29,8 +33,17 @@ final class ModelManager: ObservableObject {
         }
     }
 
-    init(modelName: String = SpeechModelCatalog.defaultModelID) {
+    private let modelLoadOverride: ModelLoadOverride?
+    private let loadRetryDelayOverride: RetryDelayOverride?
+
+    init(
+        modelName: String = SpeechModelCatalog.defaultModelID,
+        modelLoadOverride: ModelLoadOverride? = nil,
+        loadRetryDelayOverride: RetryDelayOverride? = nil
+    ) {
         self.modelName = modelName
+        self.modelLoadOverride = modelLoadOverride
+        self.loadRetryDelayOverride = loadRetryDelayOverride
     }
 
     func loadModel(name: String? = nil) async {
@@ -60,11 +73,17 @@ final class ModelManager: ObservableObject {
         debugLogger?(.model, "Loading speech model \(modelName).")
 
         do {
-            switch requestedModel.backend {
-            case .whisperKit:
-                try await loadWhisperModel(named: requestedModel.name)
-            case .fluidAudio:
-                try await loadFluidAudioModel(requestedModel)
+            do {
+                try await loadRequestedModel(requestedModel)
+            } catch {
+                guard Self.isRetryableLoadError(error) else {
+                    throw error
+                }
+
+                debugLogger?(.model, "Speech model \(modelName) load timed out. Retrying once.")
+                clearLoadedModelInstances()
+                await retryLoadDelay()
+                try await loadRequestedModel(requestedModel)
             }
             self.state = .ready
             debugLogger?(.model, "Speech model \(modelName) loaded successfully.")
@@ -72,6 +91,20 @@ final class ModelManager: ObservableObject {
             self.error = error
             self.state = .error
             debugLogger?(.model, "Speech model \(modelName) failed to load: \(error.localizedDescription)")
+        }
+    }
+
+    private func loadRequestedModel(_ requestedModel: SpeechModelDescriptor) async throws {
+        if let modelLoadOverride {
+            try await modelLoadOverride(requestedModel)
+            return
+        }
+
+        switch requestedModel.backend {
+        case .whisperKit:
+            try await loadWhisperModel(named: requestedModel.name)
+        case .fluidAudio:
+            try await loadFluidAudioModel(requestedModel)
         }
     }
 
@@ -181,10 +214,23 @@ final class ModelManager: ObservableObject {
     }
 
     private func resetLoadedModels() {
+        clearLoadedModelInstances()
+        state = .idle
+    }
+
+    private func clearLoadedModelInstances() {
         whisperKit = nil
         fluidAudioManager = nil
         sortformerModels = nil
-        state = .idle
+    }
+
+    private func retryLoadDelay() async {
+        if let loadRetryDelayOverride {
+            await loadRetryDelayOverride()
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: Self.retryDelayNanoseconds)
     }
 
     private func loadSortformerModels() async throws -> SortformerModels {
@@ -215,6 +261,24 @@ final class ModelManager: ObservableObject {
                 }
                 return lhs.startTime < rhs.startTime
             }
+    }
+
+    private static func isRetryableLoadError(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut {
+            return true
+        }
+
+        if nsError.localizedDescription.localizedCaseInsensitiveContains("timed out") {
+            return true
+        }
+
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error,
+           isRetryableLoadError(underlyingError) {
+            return true
+        }
+
+        return false
     }
 
     private static func modelIsCached(_ model: SpeechModelDescriptor) -> Bool {

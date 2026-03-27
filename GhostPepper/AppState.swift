@@ -1108,9 +1108,11 @@ class AppState: ObservableObject {
     ) -> (status: AppStatus, errorMessage: String?) {
         switch managerState {
         case .error:
+            let shouldClearSpeechModelError = currentErrorMessage?.hasPrefix(speechModelErrorPrefix) == true
+            let preservedErrorMessage = shouldClearSpeechModelError ? nil : currentErrorMessage
             return (
                 .error,
-                "\(speechModelErrorPrefix)\(managerError?.localizedDescription ?? "unknown error")"
+                preservedErrorMessage
             )
         case .ready:
             let shouldClearSpeechModelError = currentErrorMessage?.hasPrefix(speechModelErrorPrefix) == true

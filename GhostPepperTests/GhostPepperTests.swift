@@ -227,7 +227,7 @@ final class GhostPepperTests: XCTestCase {
         XCTAssertEqual(appState.cleanupBackend, .localModels)
     }
 
-    func testSpeechModelPresentationShowsManagerLoadFailure() {
+    func testSpeechModelPresentationDoesNotExposeManagerLoadFailureInMenuErrorMessage() {
         let loadError = NSError(
             domain: NSURLErrorDomain,
             code: -1001,
@@ -242,10 +242,7 @@ final class GhostPepperTests: XCTestCase {
         )
 
         XCTAssertEqual(next.status, .error)
-        XCTAssertEqual(
-            next.errorMessage,
-            "Failed to load speech model: The request timed out."
-        )
+        XCTAssertNil(next.errorMessage)
     }
 
     func testSpeechModelPresentationClearsStaleSpeechModelErrorAfterSuccessfulLoad() {
