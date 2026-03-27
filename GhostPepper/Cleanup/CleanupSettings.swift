@@ -19,7 +19,7 @@ enum LocalCleanupModelPolicy: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .fastOnly:
-            return "Qwen 3 1.7B (fast cleanup)"
+            return "Qwen 3.5 2B (fast cleanup)"
         case .fullOnly:
             return "Qwen 3.5 4B (full cleanup)"
         }

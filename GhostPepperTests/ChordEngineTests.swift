@@ -18,7 +18,7 @@ final class ChordEngineTests: XCTestCase {
         XCTAssertEqual(engine.activeRecordingAction, .pushToTalk)
     }
 
-    func testPushToTalkPromotesToToggleWithoutRestarting() throws {
+    func testPushToTalkPromotesToToggleByRestarting() throws {
         var engine = ChordEngine(bindings: [
             .pushToTalk: try XCTUnwrap(KeyChord(keys: Set([rightCommand, rightOption]))),
             .toggleToTalk: try XCTUnwrap(KeyChord(keys: Set([rightCommand, rightOption, space])))
@@ -28,7 +28,7 @@ final class ChordEngineTests: XCTestCase {
         XCTAssertEqual(engine.handle(.flagsChanged(rightOption)), [.startRecording])
         XCTAssertEqual(engine.activeRecordingAction, .pushToTalk)
 
-        XCTAssertEqual(engine.handle(.keyDown(space)), [])
+        XCTAssertEqual(engine.handle(.keyDown(space)), [.restartRecording])
         XCTAssertEqual(engine.activeRecordingAction, .toggleToTalk)
 
         XCTAssertEqual(engine.handle(.keyUp(space)), [])

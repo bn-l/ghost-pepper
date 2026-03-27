@@ -9,6 +9,7 @@ private final class FakeHotkeyMonitor: HotkeyMonitoring {
     var onPushToTalkStop: (() -> Void)?
     var onToggleToTalkStart: (() -> Void)?
     var onToggleToTalkStop: (() -> Void)?
+    var onRecordingRestart: (() -> Void)?
 
     var updatedBindings: [ChordAction: KeyChord] = [:]
     var startResult = true
@@ -309,6 +310,41 @@ final class GhostPepperTests: XCTestCase {
         )
 
         XCTAssertFalse(reloadedAppState.playSounds)
+    }
+
+    func testAppStatePipelineOwnershipAllowsSingleOwnerAtATime() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults
+        )
+
+        XCTAssertTrue(appState.acquirePipeline(for: .transcriptionLab))
+        XCTAssertFalse(appState.acquirePipeline(for: .liveRecording))
+
+        appState.releasePipeline(owner: .transcriptionLab)
+
+        XCTAssertTrue(appState.acquirePipeline(for: .liveRecording))
+    }
+
+    func testAppStatePipelineReleaseIgnoresWrongOwner() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults
+        )
+
+        XCTAssertTrue(appState.acquirePipeline(for: .transcriptionLab))
+
+        appState.releasePipeline(owner: .liveRecording)
+
+        XCTAssertFalse(appState.acquirePipeline(for: .liveRecording))
+        appState.releasePipeline(owner: .transcriptionLab)
+        XCTAssertTrue(appState.acquirePipeline(for: .liveRecording))
     }
 
     func testSoundEffectsSkipPlaybackWhenDisabled() {
@@ -833,6 +869,73 @@ final class GhostPepperTests: XCTestCase {
         appState.prepareForTermination()
 
         XCTAssertEqual(shutdownCount, 1)
+    }
+
+    func testAppStateArchivesCompletedRecordingWithOCRAndOutputs() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let labStore = TranscriptionLabStore(directoryURL: storeDirectory, maxEntries: 50)
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults,
+            transcriptionLabStore: labStore
+        )
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+
+        await appState.archiveRecordingForLab(
+            audioBuffer: [0.1, 0.2, 0.3],
+            windowContext: OCRContext(windowContents: "Qwen 3.5 4B"),
+            rawTranscription: "The default should be Quen three point five four b.",
+            correctedTranscription: "The default should be Qwen 3.5 4B.",
+            cleanupUsedFallback: false
+        )
+
+        let entries = try labStore.loadEntries()
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(URL(fileURLWithPath: entries[0].audioFileName).pathExtension, "wav")
+        XCTAssertEqual(entries[0].windowContext, OCRContext(windowContents: "Qwen 3.5 4B"))
+        XCTAssertEqual(entries[0].rawTranscription, "The default should be Quen three point five four b.")
+        XCTAssertEqual(entries[0].correctedTranscription, "The default should be Qwen 3.5 4B.")
+        XCTAssertEqual(entries[0].speechModelID, appState.speechModel)
+        XCTAssertFalse(entries[0].cleanupUsedFallback)
+    }
+
+    func testAppStateArchivesNonEmptyAudioEvenWhenLiveTranscriptionFailed() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let storeDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let labStore = TranscriptionLabStore(directoryURL: storeDirectory, maxEntries: 50)
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults,
+            transcriptionLabStore: labStore
+        )
+        defer {
+            try? FileManager.default.removeItem(at: storeDirectory)
+        }
+
+        await appState.archiveRecordingForLab(
+            audioBuffer: [0.4, 0.5],
+            windowContext: nil,
+            rawTranscription: nil,
+            correctedTranscription: nil,
+            cleanupUsedFallback: false
+        )
+
+        let entries = try labStore.loadEntries()
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(URL(fileURLWithPath: entries[0].audioFileName).pathExtension, "wav")
+        XCTAssertNil(entries[0].rawTranscription)
+        XCTAssertNil(entries[0].correctedTranscription)
     }
 
     private func closeWindows(titled title: String) {

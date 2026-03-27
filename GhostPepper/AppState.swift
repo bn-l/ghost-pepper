@@ -18,6 +18,11 @@ enum EmptyTranscriptionDisposition: Equatable {
 
 @MainActor
 class AppState: ObservableObject {
+    enum PipelineOwner {
+        case liveRecording
+        case transcriptionLab
+    }
+
     @Published var status: AppStatus = .loading
     @Published var isRecording: Bool = false
     @Published var errorMessage: String?
@@ -75,6 +80,7 @@ class AppState: ObservableObject {
     let chordBindingStore: ChordBindingStore
     let postPasteLearningCoordinator: PostPasteLearningCoordinator
     let debugLogStore: DebugLogStore
+    let transcriptionLabStore: TranscriptionLabStore
     let appRelauncher: AppRelaunching
 
     var isReady: Bool {
@@ -93,6 +99,7 @@ class AppState: ObservableObject {
     private let recordingOCRPrefetch: RecordingOCRPrefetch
     private var activePerformanceTrace: PerformanceTrace?
     private var activeCleanupAttempted = false
+    private var pipelineOwner: PipelineOwner?
     private let cleanupSettingsDefaults: UserDefaults
     private let inputMonitoringChecker: () -> Bool
     private let inputMonitoringPrompter: () -> Void
@@ -131,6 +138,7 @@ class AppState: ObservableObject {
         audioRecorder: AudioRecorder = AudioRecorder(),
         textPaster: TextPaster = TextPaster(),
         debugLogStore: DebugLogStore = DebugLogStore(),
+        transcriptionLabStore: TranscriptionLabStore = TranscriptionLabStore(),
         appRelauncher: AppRelaunching? = nil,
         inputMonitoringChecker: @escaping () -> Bool = PermissionChecker.checkInputMonitoring,
         inputMonitoringPrompter: @escaping () -> Void = PermissionChecker.promptInputMonitoring
@@ -141,6 +149,7 @@ class AppState: ObservableObject {
         self.audioRecorder = audioRecorder
         self.textPaster = textPaster
         self.debugLogStore = debugLogStore
+        self.transcriptionLabStore = transcriptionLabStore
         self.appRelauncher = appRelauncher ?? AppRelauncher()
         self.inputMonitoringChecker = inputMonitoringChecker
         self.inputMonitoringPrompter = inputMonitoringPrompter
@@ -402,6 +411,13 @@ class AppState: ObservableObject {
             beginPerformanceTrace()
         }
 
+        guard acquirePipeline(for: .liveRecording) else {
+            debugLogStore.record(category: .hotkey, message: "Recording start skipped because the transcription pipeline is busy.")
+            activePerformanceTrace = nil
+            activeCleanupAttempted = false
+            return
+        }
+
         do {
             if cleanupEnabled && canAttemptCleanup && frontmostWindowContextEnabled {
                 recordingOCRPrefetch.start(customWords: ocrCustomWords)
@@ -416,6 +432,7 @@ class AppState: ObservableObject {
             status = .recording
         } catch {
             recordingOCRPrefetch.cancel()
+            releasePipeline(owner: .liveRecording)
             activePerformanceTrace = nil
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
             status = .error
@@ -462,6 +479,14 @@ class AppState: ObservableObject {
                 activePerformanceTrace?.cleanupEndAt = Date()
             }
 
+            await archiveRecordingForLab(
+                audioBuffer: buffer,
+                windowContext: windowContext,
+                rawTranscription: text,
+                correctedTranscription: finalText,
+                cleanupUsedFallback: cleanupResult.cleanupUsedFallback
+            )
+
             recordCleanupDebugSnapshot(
                 rawTranscription: text,
                 windowContext: windowContext,
@@ -473,6 +498,20 @@ class AppState: ObservableObject {
             textPaster.paste(text: finalText)
         } else {
             recordingOCRPrefetch.cancel()
+            let archivedWindowContext: OCRContext?
+            if frontmostWindowContextEnabled {
+                let prefetchedContext = await recordingOCRPrefetch.resolve()
+                archivedWindowContext = prefetchedContext?.context
+            } else {
+                archivedWindowContext = nil
+            }
+            await archiveRecordingForLab(
+                audioBuffer: buffer,
+                windowContext: archivedWindowContext,
+                rawTranscription: nil,
+                correctedTranscription: nil,
+                cleanupUsedFallback: false
+            )
             activePerformanceTrace?.transcriptionEndAt = Date()
             switch Self.emptyTranscriptionDisposition(forAudioSampleCount: buffer.count) {
             case .cancel:
@@ -483,11 +522,13 @@ class AppState: ObservableObject {
                 debugLogStore.record(category: .model, message: "No sound detected for a long recording.")
             }
             status = .ready
+            releasePipeline(owner: .liveRecording)
             completeActivePerformanceTraceIfNeeded()
             return
         }
 
         status = .ready
+        releasePipeline(owner: .liveRecording)
     }
 
     func cleanedTranscription(_ text: String) async -> String {
@@ -497,6 +538,7 @@ class AppState: ObservableObject {
 
     private let settingsController = SettingsWindowController()
     private let promptEditorController = PromptEditorController()
+    private let cleanupTranscriptWindowController = CleanupTranscriptWindowController()
     private let debugLogWindowController = DebugLogWindowController()
 
     func showSettings() {
@@ -505,6 +547,10 @@ class AppState: ObservableObject {
 
     func showPromptEditor() {
         promptEditorController.show(appState: self)
+    }
+
+    func showCleanupTranscript(_ transcript: TranscriptionLabCleanupTranscript) {
+        cleanupTranscriptWindowController.show(transcript: transcript)
     }
 
     func showDebugLog() {
@@ -534,9 +580,9 @@ class AppState: ObservableObject {
     private func cleanedTranscriptionResult(
         _ text: String,
         windowContext: OCRContext?
-    ) async -> (text: String, prompt: String, attemptedCleanup: Bool) {
+    ) async -> (text: String, prompt: String, attemptedCleanup: Bool, cleanupUsedFallback: Bool) {
         guard cleanupEnabled else {
-            return (text: text, prompt: cleanupPrompt, attemptedCleanup: false)
+            return (text: text, prompt: cleanupPrompt, attemptedCleanup: false, cleanupUsedFallback: false)
         }
 
         let activeCleanupPrompt: String
@@ -557,7 +603,12 @@ class AppState: ObservableObject {
         let cleanedResult = await textCleaner.cleanWithPerformance(text: text, prompt: activeCleanupPrompt)
         activePerformanceTrace?.modelCallDuration = cleanedResult.performance.modelCallDuration
         activePerformanceTrace?.postProcessDuration = cleanedResult.performance.postProcessDuration
-        return (text: cleanedResult.text, prompt: activeCleanupPrompt, attemptedCleanup: canAttemptCleanup)
+        return (
+            text: cleanedResult.text,
+            prompt: activeCleanupPrompt,
+            attemptedCleanup: canAttemptCleanup,
+            cleanupUsedFallback: cleanedResult.usedFallback
+        )
     }
 
     var ocrCustomWords: [String] {
@@ -622,6 +673,128 @@ class AppState: ObservableObject {
         recordingOCRPrefetch.cancel()
     }
 
+    func archiveRecordingForLab(
+        audioBuffer: [Float],
+        windowContext: OCRContext?,
+        rawTranscription: String?,
+        correctedTranscription: String?,
+        cleanupUsedFallback: Bool
+    ) async {
+        guard !audioBuffer.isEmpty else {
+            return
+        }
+
+        let entryID = UUID()
+        let audioFileName = "\(entryID.uuidString).wav"
+        do {
+            let audioData = try AudioRecorder.serializePlayableArchiveAudioBuffer(audioBuffer)
+            let transcriptionDuration: TimeInterval?
+            if let start = activePerformanceTrace?.transcriptionStartAt,
+               let end = activePerformanceTrace?.transcriptionEndAt {
+                transcriptionDuration = end.timeIntervalSince(start)
+            } else {
+                transcriptionDuration = nil
+            }
+            let cleanupDuration: TimeInterval?
+            if let start = activePerformanceTrace?.cleanupStartAt,
+               let end = activePerformanceTrace?.cleanupEndAt {
+                cleanupDuration = end.timeIntervalSince(start)
+            } else {
+                cleanupDuration = nil
+            }
+            let entry = TranscriptionLabEntry(
+                id: entryID,
+                createdAt: Date(),
+                audioFileName: audioFileName,
+                audioDuration: Double(audioBuffer.count) / 16_000.0,
+                windowContext: windowContext,
+                rawTranscription: rawTranscription,
+                correctedTranscription: correctedTranscription,
+                speechModelID: speechModel,
+                cleanupModelName: cleanupEnabled ? textCleanupManager.localModelPolicy.title : "Cleanup disabled",
+                cleanupUsedFallback: cleanupUsedFallback
+            )
+            let stageTimings = TranscriptionLabStageTimings(
+                transcriptionDuration: transcriptionDuration,
+                cleanupDuration: cleanupDuration
+            )
+            try transcriptionLabStore.insert(entry, audioData: audioData, stageTimings: stageTimings)
+        } catch {
+            debugLogStore.record(category: .model, message: "Failed to archive transcription lab recording: \(error.localizedDescription)")
+        }
+    }
+
+    func loadTranscriptionLabEntries() throws -> [TranscriptionLabEntry] {
+        try transcriptionLabStore.loadEntries()
+    }
+
+    func loadTranscriptionLabStageTimings() throws -> [UUID: TranscriptionLabStageTimings] {
+        try transcriptionLabStore.loadStageTimings()
+    }
+
+    func transcriptionLabAudioURL(for entry: TranscriptionLabEntry) -> URL {
+        transcriptionLabStore.audioURL(for: entry.audioFileName)
+    }
+
+    func rerunTranscriptionLabTranscription(
+        _ entry: TranscriptionLabEntry,
+        speechModelID: String
+    ) async throws -> String {
+        guard acquirePipeline(for: .transcriptionLab) else {
+            throw TranscriptionLabRunnerError.pipelineBusy
+        }
+
+        let preferredSpeechModelID = speechModel
+        let runner = makeTranscriptionLabRunner()
+
+        do {
+            let result = try await runner.rerunTranscription(
+                entry: entry,
+                speechModelID: speechModelID,
+                acquirePipeline: { true },
+                releasePipeline: {}
+            )
+            await restorePreferredSpeechModelIfNeeded(preferredSpeechModelID)
+            releasePipeline(owner: .transcriptionLab)
+            return result
+        } catch {
+            await restorePreferredSpeechModelIfNeeded(preferredSpeechModelID)
+            releasePipeline(owner: .transcriptionLab)
+            throw error
+        }
+    }
+
+    func rerunTranscriptionLabCleanup(
+        _ entry: TranscriptionLabEntry,
+        rawTranscription: String,
+        cleanupModelKind: LocalCleanupModelKind,
+        prompt: String,
+        includeWindowContext: Bool
+    ) async throws -> TranscriptionLabCleanupResult {
+        guard acquirePipeline(for: .transcriptionLab) else {
+            throw TranscriptionLabRunnerError.pipelineBusy
+        }
+
+        let runner = makeTranscriptionLabRunner()
+
+        do {
+            let result = try await runner.rerunCleanup(
+                entry: entry,
+                rawTranscription: rawTranscription,
+                cleanupModelKind: cleanupModelKind,
+                prompt: prompt,
+                includeWindowContext: includeWindowContext,
+                acquirePipeline: { true },
+                releasePipeline: {}
+            )
+            releasePipeline(owner: .transcriptionLab)
+            return result
+        } catch {
+            releasePipeline(owner: .transcriptionLab)
+            throw error
+        }
+    }
+
     func updateShortcut(_ chord: KeyChord, for action: ChordAction) {
         let previousPushChord = pushToTalkChord
         let previousToggleChord = toggleToTalkChord
@@ -668,6 +841,23 @@ class AppState: ObservableObject {
         textCleanupManager.shutdownBackend()
     }
 
+    func acquirePipeline(for owner: PipelineOwner) -> Bool {
+        guard pipelineOwner == nil else {
+            return false
+        }
+
+        pipelineOwner = owner
+        return true
+    }
+
+    func releasePipeline(owner: PipelineOwner) {
+        guard pipelineOwner == owner else {
+            return
+        }
+
+        pipelineOwner = nil
+    }
+
     private func refreshCleanupModelState() async {
         guard cleanupEnabled else {
             debugLogStore.record(category: .model, message: "Cleanup disabled; unloading local cleanup models.")
@@ -689,5 +879,36 @@ class AppState: ObservableObject {
         }
 
         objectWillChange.send()
+    }
+
+    private func makeTranscriptionLabRunner() -> TranscriptionLabRunner {
+        TranscriptionLabRunner(
+            loadAudioBuffer: { [transcriptionLabStore] entry in
+                let audioData = try Data(contentsOf: transcriptionLabStore.audioURL(for: entry.audioFileName))
+                return try AudioRecorder.deserializeArchivedAudioBuffer(from: audioData)
+            },
+            loadSpeechModel: { [modelManager] modelID in
+                await modelManager.loadModel(name: modelID)
+            },
+            transcribe: { [transcriber] audioBuffer in
+                await transcriber.transcribe(audioBuffer: audioBuffer)
+            },
+            clean: { [textCleaner] text, activePrompt, modelKind in
+                await textCleaner.cleanWithPerformance(
+                    text: text,
+                    prompt: activePrompt,
+                    modelKind: modelKind
+                )
+            },
+            correctionStore: correctionStore
+        )
+    }
+
+    private func restorePreferredSpeechModelIfNeeded(_ preferredSpeechModelID: String) async {
+        guard modelManager.modelName != preferredSpeechModelID || !modelManager.isReady else {
+            return
+        }
+
+        await modelManager.loadModel(name: preferredSpeechModelID)
     }
 }

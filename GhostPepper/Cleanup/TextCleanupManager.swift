@@ -24,7 +24,7 @@ enum CleanupModelState: Equatable {
 }
 
 protocol TextCleaningManaging: AnyObject {
-    func clean(text: String, prompt: String?) async -> String?
+    func clean(text: String, prompt: String?, modelKind: LocalCleanupModelKind?) async throws -> String
 }
 
 typealias CleanupModelProbeExecutionOverride = @MainActor (
@@ -93,10 +93,10 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
 
     static let fastModel = CleanupModelDescriptor(
         kind: .fast,
-        displayName: "Qwen 3 1.7B (fast cleanup)",
-        sizeDescription: "~1 GB",
-        fileName: "Qwen3-1.7B.Q4_K_M.gguf",
-        url: "https://huggingface.co/MaziyarPanahi/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B.Q4_K_M.gguf",
+        displayName: "Qwen 3.5 2B (fast cleanup)",
+        sizeDescription: "~1.3 GB",
+        fileName: "Qwen3.5-2B-Q4_K_M.gguf",
+        url: "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/main/Qwen3.5-2B-Q4_K_M.gguf",
         maxTokenCount: 2048
     )
 
@@ -187,16 +187,16 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
         modelsDirectory.appendingPathComponent(fileName)
     }
 
-    func clean(text: String, prompt: String? = nil) async -> String? {
+    func clean(text: String, prompt: String? = nil, modelKind: LocalCleanupModelKind? = nil) async throws -> String {
         let wordCount = text.split(separator: " ").count
         let isQuestion = text.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("?")
 
-        guard let modelKind = selectedModelKind(wordCount: wordCount, isQuestion: isQuestion) else {
+        guard let modelKind = modelKind ?? selectedModelKind(wordCount: wordCount, isQuestion: isQuestion) else {
             debugLogger?(
                 .cleanup,
                 "Skipped local cleanup because no usable model was ready for policy \(localModelPolicy.rawValue)."
             )
-            return nil
+            throw CleanupBackendError.unavailable
         }
 
         let activePrompt = prompt ?? TextCleaner.defaultPrompt
@@ -209,11 +209,29 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
             )
             let cleaned = result.rawOutput.trimmingCharacters(in: .whitespacesAndNewlines)
             if cleaned.isEmpty || cleaned == "..." {
-                return nil
+                debugLogger?(
+                    .cleanup,
+                    """
+                    Discarded local cleanup output from \(modelKind == .fast ? "fast" : "full") model because it was unusable:
+                    \(result.rawOutput)
+                    """
+                )
+                throw CleanupBackendError.unusableOutput(rawOutput: result.rawOutput)
             }
             return cleaned
+        } catch let error as CleanupBackendError {
+            throw error
+        } catch let error as CleanupModelProbeError {
+            switch error {
+            case .modelUnavailable:
+                throw CleanupBackendError.unavailable
+            }
         } catch {
-            return nil
+            debugLogger?(
+                .cleanup,
+                "Local cleanup probe failed before producing usable output: \(error.localizedDescription)"
+            )
+            throw CleanupBackendError.unavailable
         }
     }
 

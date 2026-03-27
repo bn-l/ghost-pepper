@@ -7,6 +7,7 @@ class LazyUpdaterController {
 
 @main
 struct GhostPepperApp: App {
+    private static let automaticTerminationReason = "Ghost Pepper keeps a persistent menu bar presence."
     @StateObject private var appState = AppState()
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
     @State private var hasInitialized = false
@@ -46,6 +47,7 @@ struct GhostPepperApp: App {
                 }
             }
             .onAppear {
+                ProcessInfo.processInfo.disableAutomaticTermination(Self.automaticTerminationReason)
                 guard !hasInitialized else { return }
                 hasInitialized = true
                 if onboardingCompleted {
@@ -58,6 +60,7 @@ struct GhostPepperApp: App {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                ProcessInfo.processInfo.enableAutomaticTermination(Self.automaticTerminationReason)
                 appState.prepareForTermination()
             }
         }

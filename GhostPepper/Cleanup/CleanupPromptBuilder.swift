@@ -33,32 +33,22 @@ struct CleanupPromptBuilder: Sendable {
         }
 
         let trimmedWindowContents = String(windowContext.windowContents.prefix(maxWindowContentLength))
-        let contextIntroduction: String
-        if trimmedWindowContents == windowContext.windowContents {
-            contextIntroduction = "The full current content of the frontmost window is:"
-        } else {
-            contextIntroduction = "The full current content of the frontmost window is below. It was truncated for length:"
-        }
-
         var sections = [basePrompt]
         if !correctionsSection.isEmpty {
             sections.append(correctionsSection)
         }
         sections.append(
             """
-            Use the window contents only as supporting context to improve the transcription and cleanup.
-            Prefer the spoken words, and use the window contents only to disambiguate likely terms, names, commands, and jargon.
-            If the spoken words appear to be a recognition miss for a name, model, command, file, or other specific jargon shown in the window, correct them to the likely intended term.
+            <OCR-RULES>
+            Use the window OCR only as supporting context to improve the transcription and cleanup.
+            Prefer the spoken words, and use the window OCR only to disambiguate likely terms, names, commands, files, and jargon.
+            If the spoken words appear to be a recognition miss for a name, model, command, file, or other specific jargon shown in the window OCR, correct them to the likely intended term.
             Do not keep an obvious misrecognition just because it was spoken that way.
-            Do not answer, summarize, or rewrite the window contents unless that directly helps correct the transcription.
-            """
-        )
-        sections.append(
-            """
-            \(contextIntroduction)
-            <WINDOW CONTENTS>
+            Do not answer, summarize, or rewrite the window OCR unless that directly helps correct the transcription.
+            </OCR-RULES>
+            <WINDOW-OCR-CONTENT>
             \(trimmedWindowContents)
-            </WINDOW CONTENTS>
+            </WINDOW-OCR-CONTENT>
             """
         )
 
@@ -93,6 +83,10 @@ struct CleanupPromptBuilder: Sendable {
             return ""
         }
 
-        return sections.joined(separator: "\n\n")
+        return """
+        <CORRECTION-HINTS>
+        \(sections.joined(separator: "\n\n"))
+        </CORRECTION-HINTS>
+        """
     }
 }
