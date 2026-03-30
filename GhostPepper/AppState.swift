@@ -325,6 +325,12 @@ class AppState: ObservableObject {
                 status = .error
                 return
             }
+
+            let needsAccessibility = !PermissionChecker.checkAccessibility()
+            let needsInputMonitoring = !inputMonitoringChecker()
+            if needsAccessibility || needsInputMonitoring {
+                showSettings()
+            }
         }
 
         // Pre-warm audio engine so first recording starts faster

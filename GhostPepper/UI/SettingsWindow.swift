@@ -147,6 +147,9 @@ struct SettingsView: View {
     @State private var selectedDeviceID: AudioDeviceID = 0
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var hasScreenRecordingPermission = PermissionChecker.hasScreenRecordingPermission()
+    @State private var hasAccessibilityPermission = PermissionChecker.checkAccessibility()
+    @State private var hasInputMonitoringPermission = PermissionChecker.checkInputMonitoring()
+    @State private var permissionPollTimer: Timer?
     @State private var selectedSection: SettingsSection = .recording
     @State private var transcriptionLabPreviewSound: NSSound?
     @StateObject private var dictationTestController: SettingsDictationTestController
@@ -287,11 +290,14 @@ struct SettingsView: View {
             inputDevices = AudioDeviceManager.listInputDevices()
             selectedDeviceID = AudioDeviceManager.defaultInputDeviceID() ?? 0
             refreshScreenRecordingPermission()
+            refreshRequiredPermissions()
+            startPermissionPollingIfNeeded()
             syncTranscriptionLabRerunDefaults()
             transcriptionLabController.reloadEntries()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             refreshScreenRecordingPermission()
+            refreshRequiredPermissions()
         }
         .onChange(of: selectedSection) { _, newSection in
             if newSection == .transcriptionLab {
@@ -309,11 +315,30 @@ struct SettingsView: View {
             if dictationTestController.isRecording {
                 dictationTestController.stop()
             }
+            permissionPollTimer?.invalidate()
+            permissionPollTimer = nil
         }
     }
 
     private func refreshScreenRecordingPermission() {
         hasScreenRecordingPermission = PermissionChecker.hasScreenRecordingPermission()
+    }
+
+    private func refreshRequiredPermissions() {
+        hasAccessibilityPermission = PermissionChecker.checkAccessibility()
+        hasInputMonitoringPermission = PermissionChecker.checkInputMonitoring()
+        if hasAccessibilityPermission && hasInputMonitoringPermission {
+            permissionPollTimer?.invalidate()
+            permissionPollTimer = nil
+        }
+    }
+
+    private func startPermissionPollingIfNeeded() {
+        guard !hasAccessibilityPermission || !hasInputMonitoringPermission else { return }
+        guard permissionPollTimer == nil else { return }
+        permissionPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+            refreshRequiredPermissions()
+        }
     }
 
     private func syncTranscriptionLabRerunDefaults() {
@@ -400,6 +425,30 @@ struct SettingsView: View {
 
     private var recordingSection: some View {
         VStack(alignment: .leading, spacing: 24) {
+            if !hasAccessibilityPermission || !hasInputMonitoringPermission {
+                SettingsCard("Permissions") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        PermissionStatusRow(
+                            title: "Accessibility",
+                            isGranted: hasAccessibilityPermission,
+                            action: { PermissionChecker.promptAccessibility() }
+                        )
+                        PermissionStatusRow(
+                            title: "Input Monitoring",
+                            isGranted: hasInputMonitoringPermission,
+                            action: {
+                                PermissionChecker.promptInputMonitoring()
+                                PermissionChecker.openInputMonitoringSettings()
+                            }
+                        )
+
+                        Text("Both permissions are required for hotkeys and pasting to work reliably. If Ghost Pepper doesn't appear in Input Monitoring, click + and select it from Applications.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             SettingsCard("Shortcuts") {
                 VStack(alignment: .leading, spacing: 16) {
                     ShortcutRecorderView(
@@ -1058,6 +1107,28 @@ private struct SettingsField<Content: View>: View {
             Text(title)
                 .font(.subheadline.weight(.medium))
             content
+        }
+    }
+}
+
+private struct PermissionStatusRow: View {
+    let title: String
+    let isGranted: Bool
+    let action: () -> Void
+
+    var body: some View {
+        HStack {
+            Image(systemName: isGranted ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .foregroundStyle(isGranted ? .green : .red)
+            Text(title)
+                .font(.callout)
+            Spacer()
+            if !isGranted {
+                Button("Grant") { action() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+                    .controlSize(.small)
+            }
         }
     }
 }
