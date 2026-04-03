@@ -1,4 +1,4 @@
-<img src="https://github.com/matthartman/ghost-pepper/blob/main/app-icon.png?raw=true" width="80" alt="Ghost Pepper">
+<img src="./app-icon.png" width="80" alt="Ghost Pepper">
 
 # Ghost Pepper
 
