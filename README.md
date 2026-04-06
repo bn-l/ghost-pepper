@@ -1,4 +1,4 @@
-<img src="./app-icon-small.png" width="80" alt="Ghost Pepper">
+<img src="./app-icon.png" width="80" alt="Ghost Pepper">
 
 # Ghost Pepper
 
