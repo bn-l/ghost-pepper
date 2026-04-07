@@ -111,6 +111,9 @@ private struct PepperChatWindowView: View {
 
             pepperCharacter
                 .offset(x: -10, y: -10)
+                .onTapGesture(count: 2) {
+                    onMinimize()
+                }
                 .onTapGesture {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isBubbleVisible.toggle()
