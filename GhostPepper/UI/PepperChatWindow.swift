@@ -158,6 +158,15 @@ private struct PepperChatWindowView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.borderless)
+                .help("Hide bubble")
+
+                Button(action: onMinimize) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Close Pepper Chat")
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
