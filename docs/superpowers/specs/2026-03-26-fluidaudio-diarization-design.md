@@ -385,7 +385,7 @@ This is a major reason to use a streaming-capable diarization core even though t
 - `FluidAudio` dictation with speaker filtering enabled routes through diarization and filtered transcription
 - `WhisperKit` dictation ignores the setting and uses the existing path
 - cleanup still runs on the final transcript exactly once
-- transcription lab can render kept vs discarded spans for archived runs that recorded diarization metadata
+- archived-history rendering was removed; speaker filtering now affects only the in-memory dictation path
 
 ### Performance verification
 

@@ -42,7 +42,7 @@ Three items, each with status indicator:
 
 - "You're All Set!"
 - Menu bar mockup showing where the ghost pepper icon lives
-- List of what's available in the menu bar: switch mic, toggle cleanup, edit prompt, check for updates
+- List of what's available in the menu bar: switch mic, toggle cleanup, edit prompt
 - "Start Using Ghost Pepper" button closes the onboarding window and marks onboarding complete
 
 ## Technical Design

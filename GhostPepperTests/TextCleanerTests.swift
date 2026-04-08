@@ -170,7 +170,7 @@ final class TextCleanerTests: XCTestCase {
         XCTAssertEqual(result, "")
     }
 
-    func testCleanerLogsPromptInputAndCorrectionStagesToSensitiveLogger() async throws {
+    func testCleanerLogsGenericCorrectionStagesWithoutTranscriptContent() async throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         let correctionStore = CorrectionStore(defaults: defaults)
@@ -181,9 +181,9 @@ final class TextCleanerTests: XCTestCase {
             localBackend: localBackend,
             correctionStore: correctionStore
         )
-        var sensitiveMessages: [String] = []
-        cleaner.sensitiveDebugLogger = { _, message in
-            sensitiveMessages.append(message)
+        var debugMessages: [String] = []
+        cleaner.debugLogger = { _, message in
+            debugMessages.append(message)
         }
 
         let result = await cleaner.clean(
@@ -192,14 +192,10 @@ final class TextCleanerTests: XCTestCase {
         )
 
         XCTAssertEqual(result, "ghost-pepper is ready")
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Pre-cleanup corrections") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Cleanup LLM transcript") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("System prompt") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("<USER-INPUT>") }))
-        XCTAssertFalse(sensitiveMessages.contains(where: { $0.contains("User input:\n<USER-INPUT>") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Raw model output") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Final cleaned output") }))
-        XCTAssertTrue(sensitiveMessages.contains(where: { $0.contains("Post-cleanup corrections") }))
+        XCTAssertTrue(debugMessages.contains("Applied deterministic corrections before local cleanup."))
+        XCTAssertFalse(debugMessages.contains(where: { $0.contains("chat gbt is ready") }))
+        XCTAssertFalse(debugMessages.contains(where: { $0.contains("Use OCR context if present.") }))
+        XCTAssertFalse(debugMessages.contains(where: { $0.contains("ghost-pepper is ready") }))
     }
 
     func testCleanerReportsModelAndPostProcessingDurations() async {

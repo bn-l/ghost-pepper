@@ -3,13 +3,12 @@ import AppKit
 
 final class DebugLogWindowController: NSObject, NSWindowDelegate {
     private var window: NSPanel?
-    private weak var debugLogStore: DebugLogStore?
-    private var isLiveViewing = false
 
     func show(debugLogStore: DebugLogStore) {
         if let window = window {
-            self.debugLogStore = debugLogStore
-            beginLiveViewingIfNeeded()
+            if let hostingController = window.contentViewController as? NSHostingController<DebugLogWindowView> {
+                hostingController.rootView = DebugLogWindowView(debugLogStore: debugLogStore)
+            }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -30,8 +29,6 @@ final class DebugLogWindowController: NSObject, NSWindowDelegate {
         window.contentViewController = NSHostingController(
             rootView: DebugLogWindowView(debugLogStore: debugLogStore)
         )
-        self.debugLogStore = debugLogStore
-        beginLiveViewingIfNeeded()
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -40,27 +37,8 @@ final class DebugLogWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        endLiveViewingIfNeeded()
         sender.orderOut(nil)
         return false
-    }
-
-    private func beginLiveViewingIfNeeded() {
-        guard !isLiveViewing else {
-            return
-        }
-
-        debugLogStore?.beginLiveViewing()
-        isLiveViewing = true
-    }
-
-    private func endLiveViewingIfNeeded() {
-        guard isLiveViewing else {
-            return
-        }
-
-        debugLogStore?.endLiveViewing()
-        isLiveViewing = false
     }
 }
 

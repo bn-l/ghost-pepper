@@ -31,7 +31,6 @@ struct ChordEngine {
     }
 
     private mutating func evaluateStateTransition() -> [Effect] {
-        
         switch activeRecordingAction {
         case .pushToTalk:
             if matchResult() == .exact(.toggleToTalk) {
@@ -53,19 +52,6 @@ struct ChordEngine {
 
         case .toggleToTalk:
             if matchResult() == .exact(.toggleToTalk) {
-                activeRecordingAction = nil
-                return [.stopRecording]
-            }
-
-            return []
-
-        case .pepperChat:
-            guard let pepperChord = bindings[.pepperChat] else {
-                activeRecordingAction = nil
-                return []
-            }
-
-            if !pressedKeys.isSuperset(of: pepperChord.keys) {
                 activeRecordingAction = nil
                 return [.stopRecording]
             }

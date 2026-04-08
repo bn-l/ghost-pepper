@@ -14,10 +14,6 @@
     <string>2.0.1</string>
     <key>LSUIElement</key>
     <true/>
-    <key>SUFeedURL</key>
-    <string>https://raw.githubusercontent.com/matthartman/ghost-pepper/main/appcast.xml</string>
-    <key>SUPublicEDKey</key>
-    <string>aU72TC8lOwqKtnWlwAkT8z7LhIvB+LRnUNRNNw9DmDQ=</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Ghost Pepper needs microphone access to record your voice for transcription.</string>
 </dict>

@@ -81,7 +81,7 @@
 - `GhostPepperTests/CorrectionStoreTests.swift`
 - `GhostPepperTests/PostPasteLearningCoordinatorTests.swift`
 
-## Chunk 1: `codex/chord-actions`
+## Chunk 1: `chord-actions`
 
 ### Task 1: Add the chord domain model and persistence
 
@@ -222,7 +222,7 @@ git add GhostPepper/UI/ShortcutRecorderView.swift GhostPepper/UI/SettingsWindow.
 git commit -m "feat: add shortcut settings"
 ```
 
-## Chunk 2: `codex/cleanup-model-picker`
+## Chunk 2: `cleanup-model-picker`
 
 ### Task 4: Add explicit cleanup settings and local model policy
 
@@ -298,7 +298,7 @@ git add GhostPepper/UI/SettingsWindow.swift GhostPepper/AppState.swift GhostPepp
 git commit -m "feat: add cleanup model picker"
 ```
 
-## Chunk 3: `codex/foundation-model-cleanup`
+## Chunk 3: `foundation-model-cleanup`
 
 ### Task 6: Introduce a pluggable cleanup backend layer
 
@@ -384,7 +384,7 @@ git add GhostPepper/Cleanup/FoundationModelsCleanupBackend.swift GhostPepper/Cle
 git commit -m "feat: add foundation models cleanup backend"
 ```
 
-## Chunk 4: `codex/ocr-context`
+## Chunk 4: `ocr-context`
 
 Reference implementation notes:
 
@@ -481,7 +481,7 @@ git add GhostPepper/Cleanup/CleanupPromptBuilder.swift GhostPepper/AppState.swif
 git commit -m "feat: inject OCR context into cleanup"
 ```
 
-## Chunk 5: `codex/preferred-transcriptions`
+## Chunk 5: `preferred-transcriptions`
 
 ### Task 10: Add the correction store and deterministic correction engine
 
@@ -559,7 +559,7 @@ git add GhostPepper/UI/SettingsWindow.swift GhostPepper/Context/FrontmostWindowO
 git commit -m "feat: add corrections settings"
 ```
 
-## Chunk 6: `codex/learn-misheard`
+## Chunk 6: `learn-misheard`
 
 ### Task 12: Add paste metadata capture and the delayed learning coordinator
 
@@ -651,11 +651,11 @@ git commit -m "feat: finalize transcription learning controls"
 - Run `xcodegen generate` after every task that creates, deletes, or renames Swift files.
 - Create a fresh implementation worktree before branch 1 execution.
 - Stack branches in order:
-  - `codex/chord-actions`
-  - `codex/cleanup-model-picker`
-  - `codex/foundation-model-cleanup`
-  - `codex/ocr-context`
-  - `codex/preferred-transcriptions`
-  - `codex/learn-misheard`
+  - `chord-actions`
+  - `cleanup-model-picker`
+  - `foundation-model-cleanup`
+  - `ocr-context`
+  - `preferred-transcriptions`
+  - `learn-misheard`
 - After each chunk, request review before moving to the next chunk.
 - Keep commits narrow. Do not mix branch-N work into branch-(N+1).

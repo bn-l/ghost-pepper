@@ -237,7 +237,7 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
         let requestedModelKind = modelKind ?? selectedCleanupModelKind
         await loadModel(kind: requestedModelKind)
 
-        guard model(for: requestedModelKind) != nil else {
+        guard probeExecutionOverride != nil || model(for: requestedModelKind) != nil else {
             debugLogger?(
                 .cleanup,
                 "Skipped local cleanup because model \(requestedModelKind.rawValue) was not ready."
@@ -370,7 +370,7 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
     }
 
     func loadModel(kind: LocalCleanupModelKind) async {
-        if activeLoadedModelKind == kind && activeLLM != nil {
+        if activeLoadedModelKind == kind && (activeLLM != nil || probeExecutionOverride != nil) {
             state = .ready
             errorMessage = nil
             return
@@ -378,7 +378,7 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
 
         if state == .loadingModel {
             await waitForActiveLoad()
-            if activeLoadedModelKind == kind && activeLLM != nil {
+            if activeLoadedModelKind == kind && (activeLLM != nil || probeExecutionOverride != nil) {
                 state = .ready
                 errorMessage = nil
                 return
@@ -390,6 +390,14 @@ final class TextCleanupManager: ObservableObject, TextCleaningManaging {
         if let override = availabilityOverride(for: kind), !override {
             errorMessage = "Failed to load the selected cleanup model."
             state = .error
+            return
+        }
+
+        if probeExecutionOverride != nil {
+            activeLLM = nil
+            activeLoadedModelKind = kind
+            state = .ready
+            errorMessage = nil
             return
         }
 

@@ -41,7 +41,6 @@ final class TextCleaner {
     private let localBackend: CleanupBackend
     private let correctionStore: CorrectionStore
     var debugLogger: ((DebugLogCategory, String) -> Void)?
-    var sensitiveDebugLogger: ((DebugLogCategory, String) -> Void)?
 
     static let defaultPrompt = """
     Your job is to clean up transcribed audio. The audio transcription engine can make mistakes and will sometimes transcribe things in a way that is not how they should be written in text.
@@ -126,20 +125,8 @@ final class TextCleaner {
         )
         let correctedText = correctionEngine.applyPreCleanupCorrections(to: text)
         let formattedInput = Self.formatCleanupInput(userInput: correctedText)
-        if correctedText == text {
-            sensitiveDebugLogger?(.cleanup, "Pre-cleanup corrections: no changes applied.")
-        } else {
-            sensitiveDebugLogger?(
-                .cleanup,
-                """
-                Pre-cleanup corrections:
-                input:
-                \(text)
-
-                output:
-                \(correctedText)
-                """
-            )
+        if correctedText != text {
+            debugLogger?(.cleanup, "Applied deterministic corrections before local cleanup.")
         }
 
         let modelCallStart = Date()
@@ -158,27 +145,8 @@ final class TextCleaner {
             }
 
             let finalText = correctionEngine.applyPostCleanupCorrections(to: sanitizedText)
-            logCleanupTranscript(
-                prompt: activePrompt,
-                input: formattedInput,
-                rawOutput: cleanedText,
-                sanitizedOutput: sanitizedText,
-                finalOutput: finalText
-            )
-            if finalText == sanitizedText {
-                sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
-            } else {
-                sensitiveDebugLogger?(
-                    .cleanup,
-                    """
-                    Post-cleanup corrections:
-                    input:
-                    \(sanitizedText)
-
-                    output:
-                    \(finalText)
-                    """
-                )
+            if finalText != sanitizedText {
+                debugLogger?(.cleanup, "Applied deterministic corrections after local cleanup.")
             }
             return TextCleanerResult(
                 text: finalText,
@@ -201,20 +169,8 @@ final class TextCleaner {
             switch error {
             case .unavailable:
                 debugLogger?(.cleanup, "Cleanup backend unavailable, returning deterministic corrections only.")
-                if finalText == correctedText {
-                    sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
-                } else {
-                    sensitiveDebugLogger?(
-                        .cleanup,
-                        """
-                        Post-cleanup corrections:
-                        input:
-                        \(correctedText)
-
-                        output:
-                        \(finalText)
-                        """
-                    )
+                if finalText != correctedText {
+                    debugLogger?(.cleanup, "Applied deterministic corrections without a cleanup model.")
                 }
                 return TextCleanerResult(
                     text: finalText,
@@ -228,27 +184,8 @@ final class TextCleaner {
                 let modelCallDuration = Date().timeIntervalSince(modelCallStart)
                 let sanitizedOutput = Self.sanitizeCleanupOutput(rawOutput)
                 debugLogger?(.cleanup, "Cleanup model returned unusable output, falling back to deterministic corrections.")
-                logCleanupTranscript(
-                    prompt: activePrompt,
-                    input: formattedInput,
-                    rawOutput: rawOutput,
-                    sanitizedOutput: sanitizedOutput,
-                    finalOutput: finalText
-                )
-                if finalText == correctedText {
-                    sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
-                } else {
-                    sensitiveDebugLogger?(
-                        .cleanup,
-                        """
-                        Post-cleanup corrections:
-                        input:
-                        \(correctedText)
-
-                        output:
-                        \(finalText)
-                        """
-                    )
+                if finalText != correctedText {
+                    debugLogger?(.cleanup, "Applied deterministic corrections after unusable cleanup output.")
                 }
                 return TextCleanerResult(
                     text: finalText,
@@ -268,20 +205,8 @@ final class TextCleaner {
             debugLogger?(.cleanup, "Cleanup backend unavailable, returning deterministic corrections only.")
             let postProcessStart = Date()
             let finalText = correctionEngine.applyPostCleanupCorrections(to: correctedText)
-            if finalText == correctedText {
-                sensitiveDebugLogger?(.cleanup, "Post-cleanup corrections: no changes applied.")
-            } else {
-                sensitiveDebugLogger?(
-                    .cleanup,
-                    """
-                    Post-cleanup corrections:
-                    input:
-                    \(correctedText)
-
-                    output:
-                    \(finalText)
-                    """
-                )
+            if finalText != correctedText {
+                debugLogger?(.cleanup, "Applied deterministic corrections after unexpected cleanup failure.")
             }
             return TextCleanerResult(
                 text: finalText,
@@ -327,33 +252,5 @@ final class TextCleaner {
         \(userInput)
         </USER-INPUT>
         """
-    }
-
-    private func logCleanupTranscript(
-        prompt: String,
-        input: String,
-        rawOutput: String,
-        sanitizedOutput: String,
-        finalOutput: String
-    ) {
-        sensitiveDebugLogger?(
-            .cleanup,
-            """
-            Cleanup LLM transcript:
-            System prompt:
-            \(prompt)
-
-            \(input)
-
-            Raw model output:
-            \(rawOutput)
-
-            Sanitized model output:
-            \(sanitizedOutput)
-
-            Final cleaned output:
-            \(finalOutput)
-            """
-        )
     }
 }

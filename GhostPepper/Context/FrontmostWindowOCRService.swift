@@ -10,7 +10,6 @@ final class FrontmostWindowOCRService {
     private let recognizeText: TextRecognizer
 
     var debugLogger: ((DebugLogCategory, String) -> Void)?
-    var sensitiveDebugLogger: ((DebugLogCategory, String) -> Void)?
 
     init(
         permissionProvider: @escaping PermissionProvider = PermissionChecker.hasScreenRecordingPermission,
@@ -43,7 +42,6 @@ final class FrontmostWindowOCRService {
             }
 
             debugLogger?(.ocr, "Frontmost-window OCR captured text.")
-            sensitiveDebugLogger?(.ocr, "Frontmost-window OCR text:\n\(text)")
             return OCRContext(windowContents: text)
         } catch {
             if !permissionProvider() {

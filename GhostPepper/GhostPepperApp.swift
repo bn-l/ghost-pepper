@@ -1,10 +1,6 @@
 import SwiftUI
 import Combine
 
-class LazyUpdaterController {
-    lazy var controller = UpdaterController()
-}
-
 @main
 struct GhostPepperApp: App {
     private static let automaticTerminationReason = "Ghost Pepper keeps a persistent menu bar presence."
@@ -12,7 +8,6 @@ struct GhostPepperApp: App {
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
     @State private var hasInitialized = false
     private let onboardingController = OnboardingWindowController()
-    private let lazyUpdater = LazyUpdaterController()
 
     var body: some Scene {
         MenuBarExtra {
@@ -25,7 +20,7 @@ struct GhostPepperApp: App {
                     NSApplication.shared.terminate(nil)
                 }
             } else {
-                MenuBarView(appState: appState, updaterController: lazyUpdater.controller)
+                MenuBarView(appState: appState)
             }
         } label: {
             Group {

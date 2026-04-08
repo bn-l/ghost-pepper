@@ -879,7 +879,6 @@ struct DoneStep: View {
                 BulletPoint("Change your recording shortcuts")
                 BulletPoint("Toggle text cleanup on/off")
                 BulletPoint("Edit the cleanup prompt")
-                BulletPoint("Check for updates")
             }
             .padding(.horizontal, 40)
 

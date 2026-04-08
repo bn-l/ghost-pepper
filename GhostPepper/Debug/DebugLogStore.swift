@@ -34,7 +34,6 @@ final class DebugLogStore: ObservableObject {
     private let maxEntries: Int
     private let storageURL: URL
     private let formatter: DateFormatter
-    private var liveViewerCount = 0
 
     init(maxEntries: Int = 250, storageURL: URL? = nil) {
         self.maxEntries = maxEntries
@@ -63,22 +62,6 @@ final class DebugLogStore: ObservableObject {
 
         trimToCapacity()
         persistEntries()
-    }
-
-    func beginLiveViewing() {
-        liveViewerCount += 1
-    }
-
-    func endLiveViewing() {
-        liveViewerCount = max(0, liveViewerCount - 1)
-    }
-
-    func recordSensitive(category: DebugLogCategory, message: String) {
-        guard liveViewerCount > 0 else {
-            return
-        }
-
-        record(category: category, message: message)
     }
 
     func clear() {

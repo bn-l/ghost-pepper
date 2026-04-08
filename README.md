@@ -4,7 +4,7 @@
 
 **100% local** hold-to-talk speech-to-text for macOS. Hold Control to record, release to transcribe and paste. No cloud APIs, no data leaves your machine.
 
-**[Download the latest release](https://github.com/matthartman/ghost-pepper/releases/latest/download/GhostPepper.dmg)** — macOS 14.0+, Apple Silicon (M1+)
+**[Download the latest release](../../releases/latest)** — macOS 14.0+, Apple Silicon (M1+)
 
 ## Features
 
@@ -60,11 +60,11 @@ Speech models powered by [WhisperKit](https://github.com/argmaxinc/WhisperKit). 
 ## Good to know
 
 - **Launch at login** is enabled by default on first run. You can toggle it off in Settings.
-- **No logging to disk** — transcriptions are never written to files. Debug logs are in-memory only and disappear when the app quits.
+- **No transcription logging to disk** — transcriptions and OCR context are never written to files. The debug log stores operational events only.
 
 ## Acknowledgments
 
-Built with [WhisperKit](https://github.com/argmaxinc/WhisperKit), [LLM.swift](https://github.com/eastriverlee/LLM.swift), [Hugging Face](https://huggingface.co/), and [Sparkle](https://sparkle-project.org/).
+Built with [WhisperKit](https://github.com/argmaxinc/WhisperKit), [LLM.swift](https://github.com/eastriverlee/LLM.swift), and [Hugging Face](https://huggingface.co/).
 
 ## License
 

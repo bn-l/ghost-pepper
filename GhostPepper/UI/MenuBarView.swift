@@ -4,16 +4,11 @@ import ServiceManagement
 
 struct MenuBarView: View {
     @ObservedObject var appState: AppState
-    let updaterController: UpdaterController
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
             Button("Settings...") {
                 appState.showSettings()
-            }
-
-            Button("Pepper Chat...") {
-                appState.showPepperChat()
             }
 
             Button("Debug Log...") {
@@ -67,12 +62,6 @@ struct MenuBarView: View {
                         PermissionChecker.openMicrophoneSettings()
                     }
                 }
-            }
-
-            Divider()
-
-            Button("Check for Updates") {
-                updaterController.checkForUpdates()
             }
 
             Divider()

@@ -15,10 +15,10 @@
 ### Task 1: Extract a reusable cleanup probe runner
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/Cleanup/TextCleaner.swift`
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/Cleanup/TextCleanupManager.swift`
-- Create: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/Cleanup/CleanupModelProbeRunner.swift`
-- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/CleanupModelProbeRunnerTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/Cleanup/TextCleaner.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/Cleanup/TextCleanupManager.swift`
+- Create: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/Cleanup/CleanupModelProbeRunner.swift`
+- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/CleanupModelProbeRunnerTests.swift`
 
 - [ ] **Step 1: Write the failing tests for stage capture**
 
@@ -68,9 +68,9 @@ git commit -m "Add shared cleanup model probe runner"
 ### Task 2: Add the executable target and one-shot command mode
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/project.yml`
-- Create: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/CleanupModelProbe/main.swift`
-- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/CleanupModelProbeRunnerTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/project.yml`
+- Create: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/CleanupModelProbe/main.swift`
+- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/CleanupModelProbeRunnerTests.swift`
 
 - [ ] **Step 1: Write the failing tests for argument parsing and transcript formatting**
 
@@ -124,8 +124,8 @@ git commit -m "Add cleanup model probe CLI"
 ### Task 3: Add interactive REPL mode and verify against Qwen fast
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/CleanupModelProbe/main.swift`
-- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/CleanupModelProbeRunnerTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/CleanupModelProbe/main.swift`
+- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/CleanupModelProbeRunnerTests.swift`
 
 - [ ] **Step 1: Write the failing tests for interactive mode boundaries**
 

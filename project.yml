@@ -15,9 +15,6 @@ packages:
   LLM.swift:
     url: https://github.com/obra/LLM.swift.git
     branch: main
-  Sparkle:
-    url: https://github.com/sparkle-project/Sparkle.git
-    from: "2.6.0"
 
 targets:
   GhostPepper:
@@ -42,7 +39,6 @@ targets:
       - package: FluidAudio
       - package: LLM.swift
         product: LLM
-      - package: Sparkle
     entitlements:
       path: GhostPepper/GhostPepper.entitlements
       properties:

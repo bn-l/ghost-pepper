@@ -47,22 +47,11 @@ final class DebugLogStoreTests: XCTestCase {
         XCTAssertEqual(store.formattedText, "")
     }
 
-    func testSensitiveEntriesAreIgnoredWhenNoDebugViewerIsOpen() {
+    func testStorePersistsOperationalMessagesWithoutSpecialViewerState() {
         let store = makeStore()
 
-        store.recordSensitive(category: .cleanup, message: "full prompt")
+        store.record(category: .cleanup, message: "cleanup backend unavailable")
 
-        XCTAssertTrue(store.entries.isEmpty)
-    }
-
-    func testSensitiveEntriesAreRecordedOnlyWhileDebugViewerIsOpen() {
-        let store = makeStore()
-
-        store.beginLiveViewing()
-        store.recordSensitive(category: .cleanup, message: "full prompt")
-        store.endLiveViewing()
-        store.recordSensitive(category: .cleanup, message: "full output")
-
-        XCTAssertEqual(store.entries.map(\.message), ["full prompt"])
+        XCTAssertEqual(store.entries.map(\.message), ["cleanup backend unavailable"])
     }
 }

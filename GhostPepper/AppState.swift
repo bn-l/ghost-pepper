@@ -20,7 +20,6 @@ enum EmptyTranscriptionDisposition: Equatable {
 class AppState: ObservableObject {
     enum PipelineOwner {
         case liveRecording
-        case transcriptionLab
     }
 
     typealias CleanupResult = (
@@ -32,8 +31,6 @@ class AppState: ObservableObject {
 
     private struct RecordingTranscriptionResult {
         let rawTranscription: String?
-        let speakerFilteringRan: Bool
-        let diarizationSummary: DiarizationSummary?
     }
 
     @Published var status: AppStatus = .loading
@@ -64,12 +61,8 @@ class AppState: ObservableObject {
     @AppStorage("cleanupEnabled") var cleanupEnabled: Bool = true
     @AppStorage("cleanupPrompt") var cleanupPrompt: String = TextCleaner.defaultPrompt
     @AppStorage("speechModel") var speechModel: String = SpeechModelCatalog.defaultModelID
-    @AppStorage("pepperChatHost") var pepperChatHost: String = "https://api.zo.computer"
-    @AppStorage("pepperChatApiKey") var pepperChatApiKey: String = ""
-    @AppStorage("pepperChatIncludeScreenContext") var pepperChatIncludeScreenContext: Bool = true
     @Published private(set) var pushToTalkChord: KeyChord
     @Published private(set) var toggleToTalkChord: KeyChord
-    @Published private(set) var pepperChatChord: KeyChord
     @Published var postPasteLearningEnabled: Bool {
         didSet {
             cleanupSettingsDefaults.set(
@@ -105,7 +98,6 @@ class AppState: ObservableObject {
     let chordBindingStore: ChordBindingStore
     let postPasteLearningCoordinator: PostPasteLearningCoordinator
     let debugLogStore: DebugLogStore
-    let transcriptionLabStore: TranscriptionLabStore
     let appRelauncher: AppRelaunching
     var recordingSessionCoordinatorFactory: (() -> RecordingSessionCoordinator?)?
     var transcribeAudioBufferOverride: (([Float]) -> String?)?
@@ -153,15 +145,9 @@ class AppState: ObservableObject {
         PhysicalKey(keyCode: 49)   // Space
     ]))!
 
-    nonisolated static let defaultPepperChatChord = KeyChord(keys: Set([
-        PhysicalKey(keyCode: 54),  // Right Command
-        PhysicalKey(keyCode: 31)   // O
-    ]))!
-
     nonisolated static let defaultShortcutBindings: [ChordAction: KeyChord] = [
         .pushToTalk: defaultPushToTalkChord,
-        .toggleToTalk: defaultToggleToTalkChord,
-        .pepperChat: defaultPepperChatChord
+        .toggleToTalk: defaultToggleToTalkChord
     ]
 
     init(
@@ -174,25 +160,24 @@ class AppState: ObservableObject {
         correctionStore: CorrectionStore? = nil,
         audioRecorder: AudioRecorder = AudioRecorder(),
         textPaster: TextPaster = TextPaster(),
-        debugLogStore: DebugLogStore = DebugLogStore(),
-        transcriptionLabStore: TranscriptionLabStore = TranscriptionLabStore(),
+        debugLogStore: DebugLogStore? = nil,
         appRelauncher: AppRelaunching? = nil,
+        privacyMaintenance: PrivacyMaintaining = PrivacyMaintenance.defaultClient,
         inputMonitoringChecker: @escaping () -> Bool = PermissionChecker.checkInputMonitoring,
         inputMonitoringPrompter: @escaping () -> Void = PermissionChecker.promptInputMonitoring
     ) {
+        privacyMaintenance.run(defaults: cleanupSettingsDefaults)
         self.hotkeyMonitor = hotkeyMonitor
         self.chordBindingStore = chordBindingStore
         self.cleanupSettingsDefaults = cleanupSettingsDefaults
         self.audioRecorder = audioRecorder
         self.textPaster = textPaster
-        self.debugLogStore = debugLogStore
-        self.transcriptionLabStore = transcriptionLabStore
+        self.debugLogStore = debugLogStore ?? DebugLogStore()
         self.appRelauncher = appRelauncher ?? AppRelauncher()
         self.inputMonitoringChecker = inputMonitoringChecker
         self.inputMonitoringPrompter = inputMonitoringPrompter
         self.pushToTalkChord = chordBindingStore.binding(for: .pushToTalk) ?? AppState.defaultPushToTalkChord
         self.toggleToTalkChord = chordBindingStore.binding(for: .toggleToTalk) ?? AppState.defaultToggleToTalkChord
-        self.pepperChatChord = chordBindingStore.binding(for: .pepperChat) ?? AppState.defaultPepperChatChord
         self.textCleanupManager = textCleanupManager ?? TextCleanupManager(defaults: cleanupSettingsDefaults)
         self.frontmostWindowOCRService = frontmostWindowOCRService
         self.recordingOCRPrefetch = RecordingOCRPrefetch { [frontmostWindowOCRService] customWords in
@@ -300,14 +285,10 @@ class AppState: ObservableObject {
                 overlay?.show(message: .learnedCorrection(replacement))
             }
         }
-        let componentDebugLogger: (DebugLogCategory, String) -> Void = { [weak debugLogStore] category, message in
+        let activeDebugLogStore = self.debugLogStore
+        let componentDebugLogger: (DebugLogCategory, String) -> Void = { [weak activeDebugLogStore] category, message in
             Task { @MainActor in
-                debugLogStore?.record(category: category, message: message)
-            }
-        }
-        let sensitiveComponentDebugLogger: (DebugLogCategory, String) -> Void = { [weak debugLogStore] category, message in
-            Task { @MainActor in
-                debugLogStore?.recordSensitive(category: category, message: message)
+                activeDebugLogStore?.record(category: category, message: message)
             }
         }
         if let hotkeyMonitor = hotkeyMonitor as? HotkeyMonitor {
@@ -315,9 +296,7 @@ class AppState: ObservableObject {
         }
         self.textCleanupManager.debugLogger = componentDebugLogger
         self.frontmostWindowOCRService.debugLogger = componentDebugLogger
-        self.frontmostWindowOCRService.sensitiveDebugLogger = sensitiveComponentDebugLogger
         self.textCleaner.debugLogger = componentDebugLogger
-        self.textCleaner.sensitiveDebugLogger = sensitiveComponentDebugLogger
         self.postPasteLearningCoordinator.debugLogger = componentDebugLogger
         self.modelManager.debugLogger = componentDebugLogger
     }
@@ -418,17 +397,6 @@ class AppState: ObservableObject {
             Task { @MainActor in
                 self?.activePerformanceTrace?.hotkeyLiftedAt = Date()
                 await self?.stopRecordingAndTranscribe()
-            }
-        }
-
-        hotkeyMonitor.onPepperChatStart = { [weak self] in
-            Task { @MainActor in
-                self?.beginPepperChatRecording()
-            }
-        }
-        hotkeyMonitor.onPepperChatStop = { [weak self] in
-            Task { @MainActor in
-                self?.endPepperChatRecording()
             }
         }
 
@@ -573,8 +541,7 @@ class AppState: ObservableObject {
             audioBuffer: buffer,
             recordingSessionCoordinator: recordingSessionCoordinator,
             archivedWindowContext: archivedWindowContext,
-            shouldPaste: true,
-            shouldRecordDebugSnapshot: true
+            shouldPaste: true
         )
 
         if didProduceTranscript {
@@ -605,8 +572,7 @@ class AppState: ObservableObject {
             audioBuffer: audioBuffer,
             recordingSessionCoordinator: recordingSessionCoordinator,
             archivedWindowContext: archivedWindowContext,
-            shouldPaste: false,
-            shouldRecordDebugSnapshot: false
+            shouldPaste: false
         )
     }
 
@@ -614,8 +580,7 @@ class AppState: ObservableObject {
         audioBuffer: [Float],
         recordingSessionCoordinator: RecordingSessionCoordinator?,
         archivedWindowContext: OCRContext?,
-        shouldPaste: Bool,
-        shouldRecordDebugSnapshot: Bool
+        shouldPaste: Bool
     ) async -> Bool {
         let transcriptionResult = await transcribedTextForRecording(
             audioBuffer,
@@ -623,16 +588,6 @@ class AppState: ObservableObject {
         )
 
         guard let text = transcriptionResult.rawTranscription else {
-            await archiveRecordingForLab(
-                audioBuffer: audioBuffer,
-                windowContext: archivedWindowContext,
-                rawTranscription: nil,
-                correctedTranscription: nil,
-                cleanupUsedFallback: false,
-                speakerFilteringEnabled: ignoreOtherSpeakers && selectedSpeechModelSupportsSpeakerFiltering,
-                speakerFilteringRan: transcriptionResult.speakerFilteringRan,
-                diarizationSummary: transcriptionResult.diarizationSummary
-            )
             activePerformanceTrace?.transcriptionEndAt = Date()
             return false
         }
@@ -658,26 +613,6 @@ class AppState: ObservableObject {
             activePerformanceTrace?.cleanupEndAt = Date()
         }
 
-        await archiveRecordingForLab(
-            audioBuffer: audioBuffer,
-            windowContext: windowContext,
-            rawTranscription: text,
-            correctedTranscription: finalText,
-            cleanupUsedFallback: cleanupResult.cleanupUsedFallback,
-            speakerFilteringEnabled: ignoreOtherSpeakers && selectedSpeechModelSupportsSpeakerFiltering,
-            speakerFilteringRan: transcriptionResult.speakerFilteringRan,
-            diarizationSummary: transcriptionResult.diarizationSummary
-        )
-
-        if shouldRecordDebugSnapshot {
-            recordCleanupDebugSnapshot(
-                rawTranscription: text,
-                windowContext: windowContext,
-                cleanedOutput: finalText,
-                attemptedCleanup: cleanupResult.attemptedCleanup
-            )
-        }
-
         if shouldPaste {
             let pasteResult = textPaster.paste(text: finalText)
             if pasteResult == .copiedToClipboard {
@@ -692,28 +627,17 @@ class AppState: ObservableObject {
         _ audioBuffer: [Float],
         recordingSessionCoordinator: RecordingSessionCoordinator?
     ) async -> RecordingTranscriptionResult {
-        var diarizationSummary: DiarizationSummary?
-
         if let recordingSessionCoordinator {
             let summary = await recordingSessionCoordinator.finish()
-            diarizationSummary = summary
 
             if summary.usedFallback == false,
                let filteredTranscript = recordingSessionCoordinator.filteredTranscript,
                filteredTranscript.isEmpty == false {
-                return RecordingTranscriptionResult(
-                    rawTranscription: filteredTranscript,
-                    speakerFilteringRan: true,
-                    diarizationSummary: summary
-                )
+                return RecordingTranscriptionResult(rawTranscription: filteredTranscript)
             }
         }
 
-        return RecordingTranscriptionResult(
-            rawTranscription: await transcribeAudioBuffer(audioBuffer),
-            speakerFilteringRan: recordingSessionCoordinator != nil,
-            diarizationSummary: diarizationSummary
-        )
+        return RecordingTranscriptionResult(rawTranscription: await transcribeAudioBuffer(audioBuffer))
     }
 
     private func transcribeAudioBuffer(_ audioBuffer: [Float]) async -> String? {
@@ -738,17 +662,7 @@ class AppState: ObservableObject {
 
     private let settingsController = SettingsWindowController()
     private let promptEditorController = PromptEditorController()
-    private let cleanupTranscriptWindowController = CleanupTranscriptWindowController()
     private let debugLogWindowController = DebugLogWindowController()
-    private let pepperChatWindowController = PepperChatWindowController()
-    private(set) lazy var pepperChatSession: PepperChatSession = {
-        let session = PepperChatSession(transcriber: transcriber)
-        session.debugLogger = debugLogStore.record
-        session.updateBackendProvider { [weak self] in
-            self?.makePepperChatBackend()
-        }
-        return session
-    }()
 
     func showSettings() {
         settingsController.show(appState: self)
@@ -758,66 +672,20 @@ class AppState: ObservableObject {
         promptEditorController.show(appState: self)
     }
 
-    func showCleanupTranscript(_ transcript: TranscriptionLabCleanupTranscript) {
-        cleanupTranscriptWindowController.show(transcript: transcript)
-    }
-
     func showDebugLog() {
         debugLogWindowController.show(debugLogStore: debugLogStore)
-    }
-
-    func showPepperChat() {
-        pepperChatWindowController.show(session: pepperChatSession)
-    }
-
-    private var pepperChatRecorder: AudioRecorder?
-
-    func beginPepperChatRecording() {
-        guard !pepperChatApiKey.isEmpty else { return }
-        let recorder = AudioRecorder()
-        recorder.prewarm()
-        try? recorder.startRecording()
-        pepperChatRecorder = recorder
-        pepperChatSession.isRecording = true
-        pepperChatWindowController.show(session: pepperChatSession)
-        debugLogStore.record(category: .hotkey, message: "Pepper Chat recording started.")
-    }
-
-    func endPepperChatRecording() {
-        guard let recorder = pepperChatRecorder else { return }
-        pepperChatSession.isRecording = false
-        pepperChatRecorder = nil
-        debugLogStore.record(category: .hotkey, message: "Pepper Chat recording stopped.")
-
-        Task {
-            let buffer = await recorder.stopRecording()
-            await pepperChatSession.processRecording(
-                audioBuffer: buffer,
-                includeScreenContext: pepperChatIncludeScreenContext
-            )
-            // Pop the window back up if it was minimized
-            pepperChatWindowController.showIfOpen()
-        }
-    }
-
-    func makePepperChatBackend() -> PepperChatBackend? {
-        guard !pepperChatApiKey.isEmpty else { return nil }
-        let host = pepperChatHost.isEmpty ? "https://api.zo.computer" : pepperChatHost
-        return ZoBackend(host: host, apiKey: pepperChatApiKey)
     }
 
     private var shortcutBindings: [ChordAction: KeyChord] {
         [
             .pushToTalk: pushToTalkChord,
-            .toggleToTalk: toggleToTalkChord,
-            .pepperChat: pepperChatChord
+            .toggleToTalk: toggleToTalkChord
         ]
     }
 
     private func persistShortcutBindingsIfNeeded() {
         try? chordBindingStore.setBinding(pushToTalkChord, for: .pushToTalk)
         try? chordBindingStore.setBinding(toggleToTalkChord, for: .toggleToTalk)
-        try? chordBindingStore.setBinding(pepperChatChord, for: .pepperChat)
     }
 
     private var canAttemptCleanup: Bool {
@@ -874,34 +742,6 @@ class AppState: ObservableObject {
         correctionStore.preferredOCRCustomWords
     }
 
-    func recordCleanupDebugSnapshot(
-        rawTranscription: String,
-        windowContext: OCRContext?,
-        cleanedOutput: String,
-        attemptedCleanup: Bool
-    ) {
-        debugLogStore.recordSensitive(
-            category: .cleanup,
-            message: """
-            Raw transcription:
-            \(rawTranscription)
-            """
-        )
-        debugLogStore.recordSensitive(
-            category: .cleanup,
-            message: "cleanupEnabled=\(cleanupEnabled) attemptedCleanup=\(attemptedCleanup) backend=\(cleanupBackend.rawValue)"
-        )
-        let windowContextSummary = windowContext?.windowContents.isEmpty == false ? "captured" : "none"
-        debugLogStore.recordSensitive(
-            category: .cleanup,
-            message: "Cleanup context summary: windowContext=\(windowContextSummary)"
-        )
-        debugLogStore.recordSensitive(
-            category: .cleanup,
-            message: "Final cleaned output:\n\(cleanedOutput)"
-        )
-    }
-
     private func beginPerformanceTrace() {
         var trace = PerformanceTrace(sessionID: UUID().uuidString)
         trace.hotkeyDetectedAt = Date()
@@ -932,139 +772,9 @@ class AppState: ObservableObject {
         recordingOCRPrefetch.cancel()
     }
 
-    func archiveRecordingForLab(
-        audioBuffer: [Float],
-        windowContext: OCRContext?,
-        rawTranscription: String?,
-        correctedTranscription: String?,
-        cleanupUsedFallback: Bool,
-        speakerFilteringEnabled: Bool = false,
-        speakerFilteringRan: Bool = false,
-        diarizationSummary: DiarizationSummary? = nil
-    ) async {
-        guard !audioBuffer.isEmpty else {
-            return
-        }
-
-        let entryID = UUID()
-        let audioFileName = "\(entryID.uuidString).wav"
-        do {
-            let audioData = try AudioRecorder.serializePlayableArchiveAudioBuffer(audioBuffer)
-            let transcriptionDuration: TimeInterval?
-            if let start = activePerformanceTrace?.transcriptionStartAt,
-               let end = activePerformanceTrace?.transcriptionEndAt {
-                transcriptionDuration = end.timeIntervalSince(start)
-            } else {
-                transcriptionDuration = nil
-            }
-            let cleanupDuration: TimeInterval?
-            if let start = activePerformanceTrace?.cleanupStartAt,
-               let end = activePerformanceTrace?.cleanupEndAt {
-                cleanupDuration = end.timeIntervalSince(start)
-            } else {
-                cleanupDuration = nil
-            }
-            let entry = TranscriptionLabEntry(
-                id: entryID,
-                createdAt: Date(),
-                audioFileName: audioFileName,
-                audioDuration: Double(audioBuffer.count) / 16_000.0,
-                windowContext: windowContext,
-                rawTranscription: rawTranscription,
-                correctedTranscription: correctedTranscription,
-                speechModelID: speechModel,
-                cleanupModelName: cleanupEnabled ? textCleanupManager.selectedCleanupModelDisplayName : "Cleanup disabled",
-                cleanupUsedFallback: cleanupUsedFallback,
-                speakerFilteringEnabled: speakerFilteringEnabled,
-                speakerFilteringRan: speakerFilteringRan,
-                speakerFilteringUsedFallback: diarizationSummary?.usedFallback ?? false,
-                diarizationSummary: diarizationSummary
-            )
-            let stageTimings = TranscriptionLabStageTimings(
-                transcriptionDuration: transcriptionDuration,
-                cleanupDuration: cleanupDuration
-            )
-            try transcriptionLabStore.insert(entry, audioData: audioData, stageTimings: stageTimings)
-        } catch {
-            debugLogStore.record(category: .model, message: "Failed to archive transcription lab recording: \(error.localizedDescription)")
-        }
-    }
-
-    func loadTranscriptionLabEntries() throws -> [TranscriptionLabEntry] {
-        try transcriptionLabStore.loadEntries()
-    }
-
-    func loadTranscriptionLabStageTimings() throws -> [UUID: TranscriptionLabStageTimings] {
-        try transcriptionLabStore.loadStageTimings()
-    }
-
-    func transcriptionLabAudioURL(for entry: TranscriptionLabEntry) -> URL {
-        transcriptionLabStore.audioURL(for: entry.audioFileName)
-    }
-
-    func rerunTranscriptionLabTranscription(
-        _ entry: TranscriptionLabEntry,
-        speechModelID: String
-    ) async throws -> String {
-        guard acquirePipeline(for: .transcriptionLab) else {
-            throw TranscriptionLabRunnerError.pipelineBusy
-        }
-
-        let preferredSpeechModelID = speechModel
-        let runner = makeTranscriptionLabRunner()
-
-        do {
-            let result = try await runner.rerunTranscription(
-                entry: entry,
-                speechModelID: speechModelID,
-                acquirePipeline: { true },
-                releasePipeline: {}
-            )
-            await restorePreferredSpeechModelIfNeeded(preferredSpeechModelID)
-            releasePipeline(owner: .transcriptionLab)
-            return result
-        } catch {
-            await restorePreferredSpeechModelIfNeeded(preferredSpeechModelID)
-            releasePipeline(owner: .transcriptionLab)
-            throw error
-        }
-    }
-
-    func rerunTranscriptionLabCleanup(
-        _ entry: TranscriptionLabEntry,
-        rawTranscription: String,
-        cleanupModelKind: LocalCleanupModelKind,
-        prompt: String,
-        includeWindowContext: Bool
-    ) async throws -> TranscriptionLabCleanupResult {
-        guard acquirePipeline(for: .transcriptionLab) else {
-            throw TranscriptionLabRunnerError.pipelineBusy
-        }
-
-        let runner = makeTranscriptionLabRunner()
-
-        do {
-            let result = try await runner.rerunCleanup(
-                entry: entry,
-                rawTranscription: rawTranscription,
-                cleanupModelKind: cleanupModelKind,
-                prompt: prompt,
-                includeWindowContext: includeWindowContext,
-                acquirePipeline: { true },
-                releasePipeline: {}
-            )
-            releasePipeline(owner: .transcriptionLab)
-            return result
-        } catch {
-            releasePipeline(owner: .transcriptionLab)
-            throw error
-        }
-    }
-
     func updateShortcut(_ chord: KeyChord, for action: ChordAction) {
         let previousPushChord = pushToTalkChord
         let previousToggleChord = toggleToTalkChord
-        let previousPepperChatChord = pepperChatChord
 
         do {
             try chordBindingStore.setBinding(chord, for: action)
@@ -1075,15 +785,12 @@ class AppState: ObservableObject {
                 pushToTalkChord = chord
             case .toggleToTalk:
                 toggleToTalkChord = chord
-            case .pepperChat:
-                pepperChatChord = chord
             }
 
             hotkeyMonitor.updateBindings(shortcutBindings)
         } catch {
             pushToTalkChord = previousPushChord
             toggleToTalkChord = previousToggleChord
-            pepperChatChord = previousPepperChatChord
             shortcutErrorMessage = "That shortcut is already in use."
         }
     }
@@ -1149,38 +856,6 @@ class AppState: ObservableObject {
         }
 
         objectWillChange.send()
-    }
-
-    private func makeTranscriptionLabRunner() -> TranscriptionLabRunner {
-        TranscriptionLabRunner(
-            loadAudioBuffer: { [transcriptionLabStore] entry in
-                let audioData = try Data(contentsOf: transcriptionLabStore.audioURL(for: entry.audioFileName))
-                return try AudioRecorder.deserializeArchivedAudioBuffer(from: audioData)
-            },
-            loadSpeechModel: { [weak self] modelID in
-                guard let self else { return }
-                await self.loadSpeechModel(name: modelID)
-            },
-            transcribe: { [transcriber] audioBuffer in
-                await transcriber.transcribe(audioBuffer: audioBuffer)
-            },
-            clean: { [textCleaner] text, activePrompt, modelKind in
-                await textCleaner.cleanWithPerformance(
-                    text: text,
-                    prompt: activePrompt,
-                    modelKind: modelKind
-                )
-            },
-            correctionStore: correctionStore
-        )
-    }
-
-    private func restorePreferredSpeechModelIfNeeded(_ preferredSpeechModelID: String) async {
-        guard modelManager.modelName != preferredSpeechModelID || !modelManager.isReady else {
-            return
-        }
-
-        await loadSpeechModel(name: preferredSpeechModelID)
     }
 
     func loadSpeechModel(name: String) async {

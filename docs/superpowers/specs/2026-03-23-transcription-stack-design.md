@@ -33,7 +33,7 @@ This keeps the repo's current shape intact while making later branches additive 
 
 ## Branch Stack
 
-### 1. `codex/chord-actions`
+### 1. `chord-actions`
 
 Replace the single-purpose hotkey monitor with a chord system that supports:
 
@@ -65,7 +65,7 @@ Runtime rules:
 
 Globe support is best effort only. If the low-level event path exposes Globe distinctly, record and match it. If not, the recorder must refuse it instead of pretending support exists.
 
-### 2. `codex/cleanup-model-picker`
+### 2. `cleanup-model-picker`
 
 Add first-class cleanup model selection in settings.
 
@@ -83,7 +83,7 @@ Recommended local policy choices:
 
 This keeps the current local backend behavior available while making the chosen model explicit in the UI.
 
-### 3. `codex/foundation-model-cleanup`
+### 3. `foundation-model-cleanup`
 
 Make cleanup backend-pluggable while keeping the project target at macOS 14.0.
 
@@ -107,7 +107,7 @@ Recommended settings model:
 - local model policy: `Automatic`, `Fast`, `Full`
 - when Foundation Models is selected but unavailable, show status and do not break recording
 
-### 4. `codex/ocr-context`
+### 4. `ocr-context`
 
 Add frontmost-window OCR context for cleanup prompts.
 
@@ -137,7 +137,7 @@ Permission model:
 - Screen Recording permission is required for capture.
 - Accessibility remains useful for locating the frontmost focused element and bounds, especially for the later post-paste learning branch.
 
-### 5. `codex/preferred-transcriptions`
+### 5. `preferred-transcriptions`
 
 Add a persistent local correction store with two user-owned lists:
 
@@ -154,7 +154,7 @@ Recommended behavior:
 - Re-apply preferred transcriptions after cleanup where necessary to protect user-owned vocabulary.
 - Feed preferred words into OCR `customWords` where helpful so the OCR branches benefit from the same vocabulary.
 
-### 6. `codex/learn-misheard`
+### 6. `learn-misheard`
 
 Add a delayed post-paste learning pass.
 

@@ -13,13 +13,13 @@
 ## File Structure
 
 **Modify:**
-- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/AppState.swift`
+- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/AppState.swift`
   - Add persisted sound preference state and defaults wiring.
-- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/Audio/SoundEffects.swift`
+- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/Audio/SoundEffects.swift`
   - Make sound playback conditional on the new setting.
-- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
+- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
   - Replace the single-page form with a larger sidebar/detail SwiftUI shell and section subviews.
-- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
   - Extend window-host and app-state tests for the new settings structure and sound preference persistence.
 
 **Create:**
@@ -27,7 +27,7 @@
 - Optional follow-up extraction only if `SettingsWindow.swift` becomes unreasonably large during implementation.
 
 **Test:**
-- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
 
 ---
 
@@ -36,8 +36,8 @@
 ### Task 1: Add a failing persistence test for the new sound preference
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/AppState.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/AppState.swift`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -58,7 +58,7 @@ Expected:
 
 - [ ] **Step 3: Implement the minimal app-state preference**
 
-In `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/AppState.swift`:
+In `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/AppState.swift`:
 - add a persisted `playSounds` setting
 - store it in defaults with the rest of the app-owned preferences
 - keep the default `true`
@@ -80,9 +80,9 @@ git commit -m "Persist sound effects preference"
 ### Task 2: Make `SoundEffects` honor the setting
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/Audio/SoundEffects.swift`
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/AppState.swift`
-- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/Audio/SoundEffects.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/AppState.swift`
+- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
 
 - [ ] **Step 1: Write a failing behavior test**
 
@@ -100,7 +100,7 @@ Expected:
 
 - [ ] **Step 3: Implement the minimal guard**
 
-Update `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/Audio/SoundEffects.swift` to accept a simple enabled provider or equivalent test seam, and wire it from `AppState`.
+Update `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/Audio/SoundEffects.swift` to accept a simple enabled provider or equivalent test seam, and wire it from `AppState`.
 
 - [ ] **Step 4: Run the targeted test to verify it passes**
 
@@ -123,8 +123,8 @@ git commit -m "Honor sound effects preference"
 ### Task 3: Add a failing settings window size test
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -142,7 +142,7 @@ Expected:
 
 - [ ] **Step 3: Implement the larger window frame**
 
-Update `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift` to use the new larger default size while preserving existing window reuse and close behavior.
+Update `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift` to use the new larger default size while preserving existing window reuse and close behavior.
 
 - [ ] **Step 4: Run the targeted test to verify it passes**
 
@@ -161,8 +161,8 @@ git commit -m "Increase settings window size"
 ### Task 4: Replace the single long form with a sidebar shell
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
-- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
+- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
 
 - [ ] **Step 1: Add a shallow failing structure test**
 
@@ -180,7 +180,7 @@ Expected:
 
 - [ ] **Step 3: Implement the sidebar shell**
 
-In `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`:
+In `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`:
 - add `SettingsSection`
 - add a SwiftUI root shell with sidebar selection and detail pane
 - keep the AppKit host window controller intact
@@ -207,9 +207,9 @@ git commit -m "Add sidebar settings shell"
 ### Task 5: Build out the `Recording` page and add the `Play sounds` toggle
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/AppState.swift`
-- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/AppState.swift`
+- Test: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepperTests/GhostPepperTests.swift`
 
 - [ ] **Step 1: Add a failing recording-page expectation**
 
@@ -250,7 +250,7 @@ git commit -m "Add recording settings section"
 ### Task 6: Move cleanup and corrections into their own pages
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
 
 - [ ] **Step 1: Run a focused existing settings smoke suite**
 
@@ -281,7 +281,7 @@ git commit -m "Split cleanup and corrections settings"
 ### Task 7: Move models and general settings into their own pages
 
 **Files:**
-- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/codex-qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
+- Modify: `/Users/jesse/.config/superpowers/worktrees/ghost-pepper/qwen35-integration/GhostPepper/UI/SettingsWindow.swift`
 
 - [ ] **Step 1: Run a focused settings smoke suite**
 
