@@ -887,6 +887,7 @@ final class AppState {
     func prepareForTermination() {
         flushPendingCleanupPromptPersistence()
         recordingOCRPrefetch.cancel()
+        audioInputCoordinator.shutdown()
         textCleanupManager.shutdownBackend()
     }
 
