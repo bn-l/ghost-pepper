@@ -302,6 +302,9 @@ final class AppState {
         self.textPaster.onPaste = { [postPasteLearningCoordinator = self.postPasteLearningCoordinator] session in
             postPasteLearningCoordinator.handlePaste(session)
         }
+        self.textPaster.shouldCapturePasteSession = { [weak postPasteLearningCoordinator = self.postPasteLearningCoordinator] in
+            postPasteLearningCoordinator?.learningEnabled ?? false
+        }
         self.audioRecorder.onRecordingStarted = { [weak self] in
             Task { @MainActor in
                 self?.activePerformanceTrace?.micLiveAt = .now
