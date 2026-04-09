@@ -5,12 +5,23 @@ struct DeterministicCorrectionEngine: Sendable {
     let commonlyMisheard: [MisheardReplacement]
 
     func applyPreCleanupCorrections(to text: String) -> String {
-        let protectedText = protectPreferredTranscriptions(in: text)
+        let preferredExpressions = Dictionary(
+            uniqueKeysWithValues: sortedPreferredTranscriptions.map { ($0, phraseExpression(for: $0)) }
+        )
+        let replacementExpressions = Dictionary(
+            uniqueKeysWithValues: sortedMisheardReplacements.map { ($0, phraseExpression(for: $0.wrong)) }
+        )
+
+        let protectedText = protectPreferredTranscriptions(in: text, expressions: preferredExpressions)
         var correctedText = protectedText.text
 
         for replacement in sortedMisheardReplacements {
+            guard let expression = replacementExpressions[replacement] else {
+                continue
+            }
+
             correctedText = replacingPhrase(
-                replacement.wrong,
+                expression,
                 in: correctedText,
                 with: replacement.right
             )
@@ -31,12 +42,15 @@ struct DeterministicCorrectionEngine: Sendable {
         commonlyMisheard.sorted { $0.wrong.count > $1.wrong.count }
     }
 
-    private func protectPreferredTranscriptions(in text: String) -> ProtectedText {
+    private func protectPreferredTranscriptions(
+        in text: String,
+        expressions: [String: NSRegularExpression]
+    ) -> ProtectedText {
         var protectedText = text
         var replacements: [String: String] = [:]
 
         for preferredTranscription in sortedPreferredTranscriptions {
-            guard let expression = phraseExpression(for: preferredTranscription) else {
+            guard let expression = expressions[preferredTranscription] else {
                 continue
             }
 
@@ -65,11 +79,7 @@ struct DeterministicCorrectionEngine: Sendable {
         }
     }
 
-    private func replacingPhrase(_ phrase: String, in text: String, with replacement: String) -> String {
-        guard let expression = phraseExpression(for: phrase) else {
-            return text
-        }
-
+    private func replacingPhrase(_ expression: NSRegularExpression, in text: String, with replacement: String) -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         return expression.stringByReplacingMatches(
             in: text,
@@ -79,11 +89,9 @@ struct DeterministicCorrectionEngine: Sendable {
         )
     }
 
-    private func phraseExpression(for phrase: String) -> NSRegularExpression? {
+    private func phraseExpression(for phrase: String) -> NSRegularExpression {
         let trimmedPhrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedPhrase.isEmpty else {
-            return nil
-        }
+        precondition(!trimmedPhrase.isEmpty, "Phrase expressions require non-empty input.")
 
         let escapedPhrase = NSRegularExpression.escapedPattern(for: trimmedPhrase)
         let startsWithWordCharacter = trimmedPhrase.unicodeScalars.first.map(CharacterSet.alphanumerics.contains) ?? false
@@ -91,12 +99,15 @@ struct DeterministicCorrectionEngine: Sendable {
         let prefix = startsWithWordCharacter ? "(?<![\\p{L}\\p{N}])" : ""
         let suffix = endsWithWordCharacter ? "(?![\\p{L}\\p{N}])" : ""
 
-        return try? NSRegularExpression(
-            pattern: prefix + escapedPhrase + suffix,
-            options: [.caseInsensitive]
-        )
+        do {
+            return try NSRegularExpression(
+                pattern: prefix + escapedPhrase + suffix,
+                options: [.caseInsensitive]
+            )
+        } catch {
+            preconditionFailure("Escaped deterministic correction phrase failed to compile: \(error)")
+        }
     }
-
 }
 
 private struct ProtectedText {
