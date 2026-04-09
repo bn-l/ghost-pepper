@@ -1,11 +1,6 @@
 import Foundation
 
-enum CleanupBackendOption: String, CaseIterable, Identifiable {
-    case localModels
-
-    var id: String { rawValue }
-
-    var title: String {
-        "Local Models"
-    }
+enum CleanupBackendDefaults {
+    static let localModelsID = "localModels"
+    static let localModelsTitle = "Local Models"
 }

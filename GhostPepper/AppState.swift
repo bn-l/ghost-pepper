@@ -38,11 +38,6 @@ final class AppState {
     var isRecording: Bool = false
     var errorMessage: String?
     var shortcutErrorMessage: String?
-    var cleanupBackend: CleanupBackendOption {
-        didSet {
-            cleanupSettingsDefaults.set(cleanupBackend.rawValue, forKey: Self.cleanupBackendDefaultsKey)
-        }
-    }
     var frontmostWindowContextEnabled: Bool {
         didSet {
             cleanupSettingsDefaults.set(
@@ -175,7 +170,6 @@ final class AppState {
     @ObservationIgnored
     private var cleanupPromptPersistTask: Task<Void, Never>?
 
-    private static let cleanupBackendDefaultsKey = "cleanupBackend"
     private static let cleanupEnabledDefaultsKey = "cleanupEnabled"
     private static let cleanupPromptDefaultsKey = "cleanupPrompt"
     private static let speechModelDefaultsKey = "speechModel"
@@ -186,6 +180,7 @@ final class AppState {
     private static let emptyTranscriptionCancelThresholdSampleCount = 80_000
     private static let speechModelErrorPrefix = "Failed to load speech model: "
     private static let cleanupPromptPersistenceDelay: Duration = .milliseconds(300)
+    nonisolated static let cleanupBackendID = CleanupBackendDefaults.localModelsID
 
     nonisolated static let defaultPushToTalkChord = KeyChord(keys: Set([
         PhysicalKey(keyCode: 54),  // Right Command
@@ -248,9 +243,6 @@ final class AppState {
         }
         self.cleanupPromptBuilder = cleanupPromptBuilder
         self.correctionStore = correctionStore ?? CorrectionStore(defaults: cleanupSettingsDefaults)
-        let storedCleanupBackend = CleanupBackendOption(
-            rawValue: cleanupSettingsDefaults.string(forKey: Self.cleanupBackendDefaultsKey) ?? ""
-        ) ?? .localModels
         let storedCleanupEnabled: Bool
         if cleanupSettingsDefaults.object(forKey: Self.cleanupEnabledDefaultsKey) == nil {
             storedCleanupEnabled = true
@@ -281,7 +273,6 @@ final class AppState {
         self.cleanupEnabled = storedCleanupEnabled
         self.cleanupPrompt = storedCleanupPrompt
         self.speechModel = storedSpeechModel
-        self.cleanupBackend = storedCleanupBackend
         self.frontmostWindowContextEnabled = storedFrontmostWindowContextEnabled
         self.postPasteLearningEnabled = storedPostPasteLearningEnabled
         self.ignoreOtherSpeakers = storedIgnoreOtherSpeakers
@@ -834,7 +825,7 @@ final class AppState {
             "Dictation pipeline completed.",
             fields: trace.fields(
                 speechModelID: speechModel,
-                cleanupBackend: cleanupBackend,
+                cleanupBackendID: Self.cleanupBackendID,
                 cleanupAttempted: activeCleanupAttempted
             )
         )
@@ -889,14 +880,6 @@ final class AppState {
         }
     }
 
-    func updateCleanupBackend(_ backend: CleanupBackendOption) {
-        cleanupBackend = backend
-        modelLogger.notice("cleanup.backend_changed", "Cleanup backend changed.", fields: ["cleanupBackend": backend.rawValue])
-        Task {
-            await refreshCleanupModelState()
-        }
-    }
-
     func prepareForTermination() {
         flushPendingCleanupPromptPersistence()
         recordingOCRPrefetch.cancel()
@@ -932,7 +915,7 @@ final class AppState {
             "cleanup.policy",
             "Cleanup backend policy evaluated.",
             fields: [
-                "cleanupBackend": cleanupBackend.rawValue,
+                "cleanupBackend": Self.cleanupBackendID,
                 "shouldLoadLocalModels": String(shouldLoadLocalModels)
             ]
         )

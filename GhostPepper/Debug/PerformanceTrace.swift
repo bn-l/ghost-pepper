@@ -46,13 +46,13 @@ struct PerformanceTrace {
 
     func fields(
         speechModelID: String,
-        cleanupBackend: CleanupBackendOption,
+        cleanupBackendID: String,
         cleanupAttempted: Bool
     ) -> [String: String] {
         [
             "sessionID": sessionID,
             "speechModelID": speechModelID,
-            "cleanupBackend": cleanupBackend.rawValue,
+            "cleanupBackend": cleanupBackendID,
             "hotkeyToMicLiveMS": durationMilliseconds(from: hotkeyDetectedAt, to: micLiveAt),
             "hotkeyLiftToMicColdMS": durationMilliseconds(from: hotkeyLiftedAt, to: micColdAt),
             "transcriptionMS": durationMilliseconds(from: transcriptionStartAt, to: transcriptionEndAt),
@@ -68,12 +68,12 @@ struct PerformanceTrace {
 
     func summary(
         speechModelID: String,
-        cleanupBackend: CleanupBackendOption,
+        cleanupBackendID: String,
         cleanupAttempted: Bool
     ) -> String {
         let fields = fields(
             speechModelID: speechModelID,
-            cleanupBackend: cleanupBackend,
+            cleanupBackendID: cleanupBackendID,
             cleanupAttempted: cleanupAttempted
         )
         return fields

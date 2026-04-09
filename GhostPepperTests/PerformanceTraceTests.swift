@@ -24,7 +24,7 @@ final class PerformanceTraceTests: XCTestCase {
 
         let summary = trace.summary(
             speechModelID: "parakeet-v3",
-            cleanupBackend: .localModels,
+            cleanupBackendID: CleanupBackendDefaults.localModelsID,
             cleanupAttempted: true
         )
 
@@ -56,7 +56,7 @@ final class PerformanceTraceTests: XCTestCase {
 
         let summary = trace.summary(
             speechModelID: "openai_whisper-small.en",
-            cleanupBackend: .localModels,
+            cleanupBackendID: CleanupBackendDefaults.localModelsID,
             cleanupAttempted: false
         )
 

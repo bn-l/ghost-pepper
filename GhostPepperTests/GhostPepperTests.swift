@@ -228,18 +228,18 @@ final class GhostPepperTests: XCTestCase {
         XCTAssertEqual(appState.shortcutErrorMessage, "That shortcut is already in use.")
     }
 
-    func testAppStateLoadsPersistedCleanupBackendSelection() throws {
+    func testAppStateUsesLocalCleanupBackendIdentifier() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
         defaults.set("localModels", forKey: "cleanupBackend")
 
-        let appState = AppState(
+        _ = AppState(
             hotkeyMonitor: FakeHotkeyMonitor(),
             chordBindingStore: ChordBindingStore(defaults: defaults),
             cleanupSettingsDefaults: defaults
         )
 
-        XCTAssertEqual(appState.cleanupBackend, .localModels)
+        XCTAssertEqual(AppState.cleanupBackendID, CleanupBackendDefaults.localModelsID)
     }
 
     func testSpeechModelPresentationDoesNotExposeManagerLoadFailureInMenuErrorMessage() {
@@ -287,22 +287,19 @@ final class GhostPepperTests: XCTestCase {
         )
     }
 
-    func testAppStateUpdateCleanupBackendPersistsAndUpdatesTextCleaner() throws {
+    func testAppStateIgnoresLegacyCleanupBackendDefault() throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
+        defaults.set("legacyRemoteBackend", forKey: "cleanupBackend")
         let appState = AppState(
             hotkeyMonitor: FakeHotkeyMonitor(),
             chordBindingStore: ChordBindingStore(defaults: defaults),
             cleanupSettingsDefaults: defaults
         )
 
-        appState.updateCleanupBackend(.localModels)
-
-        XCTAssertEqual(appState.cleanupBackend, .localModels)
-        XCTAssertEqual(
-            defaults.string(forKey: "cleanupBackend"),
-            CleanupBackendOption.localModels.rawValue
-        )
+        XCTAssertEqual(AppState.cleanupBackendID, CleanupBackendDefaults.localModelsID)
+        XCTAssertEqual(appState.textCleanupManager.selectedCleanupModelKind, .qwen35_0_8b_q4_k_m)
+        XCTAssertEqual(defaults.string(forKey: "cleanupBackend"), "legacyRemoteBackend")
     }
 
     func testAppStatePersistsIgnoreOtherSpeakersPreference() throws {
