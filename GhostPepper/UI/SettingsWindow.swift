@@ -17,7 +17,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         let view = SettingsView(appState: appState)
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 960, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1_080, height: 780),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -25,7 +25,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
         window.title = "Ghost Pepper Settings"
         window.delegate = self
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 900, height: 680)
+        window.minSize = NSSize(width: 980, height: 720)
         window.contentViewController = NSHostingController(rootView: view)
         window.center()
         window.makeKeyAndOrderFront(nil)
