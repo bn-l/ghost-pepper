@@ -1,7 +1,76 @@
 import XCTest
+import CoreAudio
 @testable import GhostPepper
 
+private final class RecorderFakeDeviceManager: AudioDeviceManaging {
+    let devices: [AudioInputDevice]
+    let defaultDeviceUID: String?
+
+    init(devices: [AudioInputDevice], defaultDeviceUID: String? = nil) {
+        self.devices = devices
+        self.defaultDeviceUID = defaultDeviceUID
+    }
+
+    func listInputDevices() -> [AudioInputDevice] {
+        devices
+    }
+
+    func defaultInputDevice() -> AudioInputDevice? {
+        guard let defaultDeviceUID else {
+            return devices.first
+        }
+        return inputDevice(uid: defaultDeviceUID)
+    }
+
+    func inputDevice(uid: String) -> AudioInputDevice? {
+        devices.first(where: { $0.uid == uid })
+    }
+
+    func addInputDeviceListObserver(
+        queue: DispatchQueue,
+        handler: @escaping @Sendable () -> Void
+    ) -> AudioHardwareObserving? {
+        nil
+    }
+
+    func addStateObservers(
+        for device: AudioInputDevice,
+        queue: DispatchQueue,
+        handler: @escaping @Sendable () -> Void
+    ) -> [AudioHardwareObserving] {
+        []
+    }
+}
+
+private final class RecorderFakeSession: AudioInputCapturing, @unchecked Sendable {
+    var onSamples: (@Sendable (AudioInputBufferBatch) -> Void)?
+    private(set) var startedDevices: [AudioInputDevice] = []
+    private(set) var stopCallCount = 0
+
+    func start(device: AudioInputDevice) async throws -> AudioInputStreamFormat {
+        startedDevices.append(device)
+        return AudioInputStreamFormat(sampleRate: 16_000, channelCount: 1)
+    }
+
+    func stop() async {
+        stopCallCount += 1
+    }
+}
+
 final class AudioRecorderTests: XCTestCase {
+    private func makeDevice(uid: String, name: String) -> AudioInputDevice {
+        let hashedID = uid.utf8.reduce(UInt32(5381)) { partialResult, byte in
+            ((partialResult << 5) &+ partialResult) &+ UInt32(byte)
+        }
+        return AudioInputDevice(
+            id: AudioDeviceID(max(hashedID, 1)),
+            uid: uid,
+            name: name,
+            isAlive: true,
+            transportType: kAudioDeviceTransportTypeBuiltIn
+        )
+    }
+
     func testBufferStartsEmpty() {
         let recorder = AudioRecorder()
         XCTAssertTrue(recorder.audioBuffer.isEmpty)
@@ -17,7 +86,7 @@ final class AudioRecorderTests: XCTestCase {
     func testAudioBufferSerializationRoundTripsSamples() throws {
         let samples: [Float] = [0.25, -0.5, 0.75, 0.0]
 
-        let data = try AudioRecorder.serializeAudioBuffer(samples)
+        let data = AudioRecorder.serializeAudioBuffer(samples)
         let decoded = try AudioRecorder.deserializeAudioBuffer(from: data)
 
         XCTAssertEqual(decoded, samples)
@@ -26,7 +95,7 @@ final class AudioRecorderTests: XCTestCase {
     func testPlayableArchiveSerializationCreatesWAVDataThatRoundTripsSamples() throws {
         let samples: [Float] = [0.25, -0.5, 0.75, 0.0]
 
-        let data = try AudioRecorder.serializePlayableArchiveAudioBuffer(samples)
+        let data = AudioRecorder.serializePlayableArchiveAudioBuffer(samples)
         let riffHeader = String(decoding: data.prefix(4), as: UTF8.self)
         let waveHeader = String(decoding: data.dropFirst(8).prefix(4), as: UTF8.self)
         let decoded = try AudioRecorder.deserializeArchivedAudioBuffer(from: data)
@@ -64,5 +133,26 @@ final class AudioRecorderTests: XCTestCase {
 
         XCTAssertEqual(deliveredSamples, [0.1, 0.2, 0.3, 0.4])
         XCTAssertEqual(recorder.audioBuffer, [0.1, 0.2, 0.3, 0.4])
+    }
+
+    func testRecorderUsesPreferredInputDeviceUIDWhenStartingCapture() async throws {
+        let builtIn = makeDevice(uid: "builtin", name: "MacBook Microphone")
+        let preferred = makeDevice(uid: "preferred", name: "iPhone Microphone")
+        let deviceManager = RecorderFakeDeviceManager(
+            devices: [builtIn, preferred],
+            defaultDeviceUID: builtIn.uid
+        )
+        let session = RecorderFakeSession()
+        let recorder = AudioRecorder(
+            preferredInputDeviceUIDProvider: { preferred.uid },
+            deviceManager: deviceManager,
+            sessionFactory: { session }
+        )
+
+        try await recorder.startRecording()
+        _ = await recorder.stopRecording()
+
+        XCTAssertEqual(session.startedDevices.map(\.uid), [preferred.uid])
+        XCTAssertEqual(session.stopCallCount, 1)
     }
 }

@@ -1,12 +1,20 @@
-import AVFoundation
+@preconcurrency import AVFoundation
+import Foundation
 
-final class AudioRecorder {
+final class AudioRecorder: @unchecked Sendable {
     var onRecordingStarted: (() -> Void)?
     var onRecordingStopped: (() -> Void)?
     var onConvertedAudioChunk: (([Float]) -> Void)?
+    var logger: AppLogger?
 
-    private let engine = AVAudioEngine()
     private let bufferLock = NSLock()
+    private let conversionQueue = DispatchQueue(label: "GhostPepper.AudioRecorder.Conversion")
+    private let preferredInputDeviceUIDProvider: () -> String?
+    private let deviceManager: AudioDeviceManaging
+    private let sessionFactory: @Sendable () -> AudioInputCapturing
+    private var session: AudioInputCapturing?
+    private var sourceFormat: AVAudioFormat?
+    private var converter: AVAudioConverter?
 
     /// The accumulated audio samples captured during recording.
     /// Accessible for reading within the module (internal) so tests can inspect it.
@@ -17,19 +25,28 @@ final class AudioRecorder {
         AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
     }()
 
-    /// Pre-warm the audio engine so the first recording starts faster.
-    func prewarm() {
-        _ = engine.inputNode // Force node initialization
-        engine.prepare()
+    init(
+        preferredInputDeviceUIDProvider: @escaping () -> String? = {
+            UserDefaults.standard.string(forKey: "preferredInputDeviceUID")
+        },
+        deviceManager: AudioDeviceManaging = AudioDeviceManager.shared,
+        sessionFactory: @escaping @Sendable () -> AudioInputCapturing = { HALAudioInputSession() }
+    ) {
+        self.preferredInputDeviceUIDProvider = preferredInputDeviceUIDProvider
+        self.deviceManager = deviceManager
+        self.sessionFactory = sessionFactory
     }
 
-    static func serializeAudioBuffer(_ samples: [Float]) throws -> Data {
+    /// Audio capture is now started asynchronously on a dedicated queue, so prewarming is a no-op.
+    func prewarm() {}
+
+    static func serializeAudioBuffer(_ samples: [Float]) -> Data {
         samples.withUnsafeBufferPointer { buffer in
             Data(buffer: buffer)
         }
     }
 
-    static func serializePlayableArchiveAudioBuffer(_ samples: [Float]) throws -> Data {
+    static func serializePlayableArchiveAudioBuffer(_ samples: [Float]) -> Data {
         let sampleRate = UInt32(16_000)
         let channelCount = UInt16(1)
         let bitsPerSample = UInt16(16)
@@ -85,77 +102,164 @@ final class AudioRecorder {
 
     /// Clears the in-memory audio buffer.
     func resetBuffer() {
-        bufferLock.lock()
-        audioBuffer = []
-        bufferLock.unlock()
+        bufferLock.withLock {
+            audioBuffer = []
+        }
     }
 
-    /// Starts capturing audio from the default input device.
+    /// Starts capturing audio from the preferred input device.
     /// Audio is converted to 16 kHz mono Float32 and appended to `audioBuffer`.
-    func startRecording() throws {
+    func startRecording() async throws {
         resetBuffer()
+        sourceFormat = nil
+        converter = nil
 
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        print("AudioRecorder: input device format = \(inputFormat), sampleRate=\(inputFormat.sampleRate), channels=\(inputFormat.channelCount)")
-
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            throw AudioRecorderError.noInputAvailable
+        if let session {
+            await session.stop()
+            self.session = nil
         }
 
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat) else {
-            throw AudioRecorderError.converterCreationFailed
+        let device = try resolveRecordingDevice()
+        let session = sessionFactory()
+        self.session = session
+        session.onSamples = { [weak self] batch in
+            self?.handleInputBatch(batch)
         }
 
-        // Choose a buffer size that gives roughly 100ms of audio at the input sample rate.
-        let bufferSize: AVAudioFrameCount = AVAudioFrameCount(inputFormat.sampleRate * 0.1)
-
-        inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: inputFormat) { [weak self] pcmBuffer, _ in
-            guard let self = self else { return }
-            self.convert(buffer: pcmBuffer, using: converter)
-        }
-
-        try engine.start()
+        let format = try await session.start(device: device)
+        logger?.notice(
+            "recording.ready",
+            "Recording ready using the selected input device.",
+            fields: [
+                "deviceName": device.name,
+                "deviceUID": device.uid,
+                "deviceID": String(device.id),
+                "sampleRate": String(Int(format.sampleRate)),
+                "channelCount": String(format.channelCount),
+                "continuity": String(device.isContinuityCandidate)
+            ]
+        )
         onRecordingStarted?()
     }
 
     /// Stops capturing audio and returns the recorded buffer.
-    /// Waits briefly to flush any remaining audio in the engine's buffer.
     func stopRecording() async -> [Float] {
-        // Wait 200ms to let the last audio buffers flush through
-        try? await Task.sleep(nanoseconds: 200_000_000)
+        let session = self.session
+        self.session = nil
+        await session?.stop()
 
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        await withCheckedContinuation { continuation in
+            conversionQueue.async {
+                continuation.resume()
+            }
+        }
+
         onRecordingStopped?()
 
-        bufferLock.lock()
-        let result = audioBuffer
-        bufferLock.unlock()
-        print("AudioRecorder: stopped, buffer has \(result.count) samples (\(Double(result.count) / 16000.0)s of audio)")
-        if !result.isEmpty {
-            let maxAmplitude = result.map { abs($0) }.max() ?? 0
-            print("AudioRecorder: max amplitude = \(maxAmplitude)")
-        }
+        let result = bufferLock.withLock { audioBuffer }
+        logger?.info(
+            "recording.stopped",
+            "Recording stopped.",
+            fields: [
+                "sampleCount": String(result.count),
+                "durationMS": String(Int((Double(result.count) / 16.0).rounded()))
+            ]
+        )
         return result
     }
 
     // MARK: - Private
 
-    private func convert(buffer: AVAudioPCMBuffer, using converter: AVAudioConverter) {
-        let frameCapacity = AVAudioFrameCount(
-            Double(buffer.frameLength) * (targetFormat.sampleRate / buffer.format.sampleRate)
-        ) + 1 // +1 to avoid rounding down to zero
-
-        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
-            return
+    private func resolveRecordingDevice() throws -> AudioInputDevice {
+        if let preferredUID = preferredInputDeviceUIDProvider(),
+           let preferredDevice = deviceManager.inputDevice(uid: preferredUID),
+           preferredDevice.isAlive {
+            return preferredDevice
         }
 
-        var error: NSError?
+        if let defaultDevice = deviceManager.defaultInputDevice(),
+           defaultDevice.isAlive {
+            return defaultDevice
+        }
+
+        guard let fallbackDevice = deviceManager.listInputDevices().first(where: \.isAlive) else {
+            throw AudioRecorderError.noInputAvailable
+        }
+        return fallbackDevice
+    }
+
+    private func handleInputBatch(_ batch: AudioInputBufferBatch) {
+        conversionQueue.async { [weak self] in
+            guard let self else { return }
+            let convertedFrames = self.convert(samples: batch.samples, sampleRate: batch.sampleRate)
+            guard !convertedFrames.isEmpty else {
+                return
+            }
+
+            self.appendConvertedFrames(convertedFrames)
+        }
+    }
+
+    private func convert(samples: [Float], sampleRate: Double) -> [Float] {
+        let inputFormat = sourceFormat(for: sampleRate)
+        guard let inputBuffer = AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
+            frameCapacity: AVAudioFrameCount(samples.count)
+        ) else {
+            return []
+        }
+
+        inputBuffer.frameLength = AVAudioFrameCount(samples.count)
+        if let channelData = inputBuffer.floatChannelData?.pointee {
+            for (index, sample) in samples.enumerated() {
+                channelData[index] = sample
+            }
+        }
+
+        let converter = converter(for: inputFormat)
+        return convert(buffer: inputBuffer, using: converter)
+    }
+
+    private func sourceFormat(for sampleRate: Double) -> AVAudioFormat {
+        if let sourceFormat, sourceFormat.sampleRate == sampleRate {
+            return sourceFormat
+        }
+
+        let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        )!
+        sourceFormat = inputFormat
+        converter = nil
+        return inputFormat
+    }
+
+    private func converter(for inputFormat: AVAudioFormat) -> AVAudioConverter {
+        if let converter,
+           converter.inputFormat.sampleRate == inputFormat.sampleRate {
+            return converter
+        }
+
+        let nextConverter = AVAudioConverter(from: inputFormat, to: targetFormat)!
+        converter = nextConverter
+        return nextConverter
+    }
+
+    private func convert(buffer: AVAudioPCMBuffer, using converter: AVAudioConverter) -> [Float] {
+        let frameCapacity = AVAudioFrameCount(
+            Double(buffer.frameLength) * (targetFormat.sampleRate / buffer.format.sampleRate)
+        ) + 1
+
+        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
+            return []
+        }
+
+        var conversionError: NSError?
         var allConsumed = false
 
-        converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
+        converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
             if allConsumed {
                 outStatus.pointee = .noDataNow
                 return nil
@@ -165,48 +269,35 @@ final class AudioRecorder {
             return buffer
         }
 
-        if let error = error {
-            print("AudioRecorder: conversion error – \(error.localizedDescription)")
-            return
+        if let conversionError {
+            logger?.warning("recording.conversion_failed", "Audio sample-rate conversion failed.", error: conversionError)
+            return []
         }
 
-        guard let channelData = convertedBuffer.floatChannelData, convertedBuffer.frameLength > 0 else {
-            return
+        guard let channelData = convertedBuffer.floatChannelData,
+              convertedBuffer.frameLength > 0 else {
+            return []
         }
 
-        let frames = Array(UnsafeBufferPointer(start: channelData[0], count: Int(convertedBuffer.frameLength)))
-
-        appendConvertedFrames(frames)
+        return Array(
+            UnsafeBufferPointer(
+                start: channelData[0],
+                count: Int(convertedBuffer.frameLength)
+            )
+        )
     }
 
     #if DEBUG
-    func test_convert(samples: [Float]) {
-        let inputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: targetFormat.sampleRate,
-            channels: 1,
-            interleaved: false
-        )!
-        guard let converter = AVAudioConverter(from: inputFormat, to: targetFormat),
-              let buffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(samples.count)) else {
-            return
-        }
-
-        buffer.frameLength = AVAudioFrameCount(samples.count)
-        if let channelData = buffer.floatChannelData?.pointee {
-            for (index, sample) in samples.enumerated() {
-                channelData[index] = sample
-            }
-        }
-
-        convert(buffer: buffer, using: converter)
+    func test_convert(samples: [Float], sampleRate: Double = 16_000) {
+        let convertedFrames = convert(samples: samples, sampleRate: sampleRate)
+        appendConvertedFrames(convertedFrames)
     }
     #endif
 
     private func appendConvertedFrames(_ frames: [Float]) {
-        bufferLock.lock()
-        audioBuffer.append(contentsOf: frames)
-        bufferLock.unlock()
+        bufferLock.withLock {
+            audioBuffer.append(contentsOf: frames)
+        }
 
         onConvertedAudioChunk?(frames)
     }
@@ -280,14 +371,11 @@ private extension FixedWidthInteger {
 
 enum AudioRecorderError: Error, LocalizedError {
     case noInputAvailable
-    case converterCreationFailed
 
     var errorDescription: String? {
         switch self {
         case .noInputAvailable:
             return "No audio input device available."
-        case .converterCreationFailed:
-            return "Failed to create audio format converter."
         }
     }
 }

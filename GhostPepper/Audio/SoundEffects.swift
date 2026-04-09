@@ -1,6 +1,6 @@
 import AppKit
 
-class SoundEffects {
+final class SoundEffects {
     private let startSound: NSSound?
     private let stopSound: NSSound?
     private let isEnabled: () -> Bool
