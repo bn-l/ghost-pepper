@@ -4,7 +4,7 @@
 
 **100% local** hold-to-talk speech-to-text for macOS. Hold Control to record, release to transcribe and paste. No cloud APIs, no data leaves your machine.
 
-**[Download the latest release](../../releases/latest)** — macOS 14.0+, Apple Silicon (M1+)
+**[Download the latest release](../../releases/latest)** — macOS 15.0+, Apple Silicon (M1+)
 
 ## Features
 
