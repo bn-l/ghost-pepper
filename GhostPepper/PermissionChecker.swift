@@ -1,7 +1,9 @@
-@preconcurrency import Cocoa
+import AppKit
+@preconcurrency import ApplicationServices
 import AVFoundation
 import CoreGraphics
 import IOKit.hidsystem
+import Synchronization
 
 enum MicrophonePermissionStatus: Equatable {
     case authorized
@@ -10,7 +12,7 @@ enum MicrophonePermissionStatus: Equatable {
 }
 
 enum PermissionChecker {
-    nonisolated(unsafe) private static let accessibilityPromptOptionKey: CFString =
+    nonisolated(unsafe) private static let accessibilityPromptOptionKey =
         kAXTrustedCheckOptionPrompt.takeUnretainedValue()
 
     struct Client: Sendable {
@@ -29,7 +31,16 @@ enum PermissionChecker {
         return Client.live
     }()
 
-    nonisolated(unsafe) static var current = defaultClient
+    private static let currentClient = Mutex(defaultClient)
+
+    static var current: Client {
+        get {
+            currentClient.withLock { $0 }
+        }
+        set {
+            currentClient.withLock { $0 = newValue }
+        }
+    }
 
     static func checkAccessibility() -> Bool {
         current.checkAccessibility()
