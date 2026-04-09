@@ -1,6 +1,10 @@
 @preconcurrency import AVFoundation
 import Foundation
 
+private final class ConverterConsumptionState: @unchecked Sendable {
+    var inputConsumed = false
+}
+
 final class AudioRecorder: @unchecked Sendable {
     var onRecordingStarted: (() -> Void)?
     var onRecordingStopped: (() -> Void)?
@@ -111,8 +115,10 @@ final class AudioRecorder: @unchecked Sendable {
     /// Audio is converted to 16 kHz mono Float32 and appended to `audioBuffer`.
     func startRecording() async throws {
         resetBuffer()
-        sourceFormat = nil
-        converter = nil
+        conversionQueue.sync {
+            sourceFormat = nil
+            converter = nil
+        }
 
         if let session {
             await session.stop()
@@ -252,39 +258,53 @@ final class AudioRecorder: @unchecked Sendable {
             Double(buffer.frameLength) * (targetFormat.sampleRate / buffer.format.sampleRate)
         ) + 1
 
-        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: frameCapacity) else {
-            return []
-        }
-
         var conversionError: NSError?
-        var allConsumed = false
+        let consumptionState = ConverterConsumptionState()
+        var convertedFrames: [Float] = []
 
-        converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
-            if allConsumed {
-                outStatus.pointee = .noDataNow
-                return nil
+        while true {
+            guard let convertedBuffer = AVAudioPCMBuffer(
+                pcmFormat: targetFormat,
+                frameCapacity: frameCapacity
+            ) else {
+                return convertedFrames
             }
-            allConsumed = true
-            outStatus.pointee = .haveData
-            return buffer
-        }
 
-        if let conversionError {
-            logger?.warning("recording.conversion_failed", "Audio sample-rate conversion failed.", error: conversionError)
-            return []
-        }
+            let status = converter.convert(to: convertedBuffer, error: &conversionError) { _, outStatus in
+                if consumptionState.inputConsumed {
+                    outStatus.pointee = .noDataNow
+                    return nil
+                }
 
-        guard let channelData = convertedBuffer.floatChannelData,
-              convertedBuffer.frameLength > 0 else {
-            return []
-        }
+                consumptionState.inputConsumed = true
+                outStatus.pointee = .haveData
+                return buffer
+            }
 
-        return Array(
-            UnsafeBufferPointer(
-                start: channelData[0],
-                count: Int(convertedBuffer.frameLength)
-            )
-        )
+            if let conversionError {
+                logger?.warning("recording.conversion_failed", "Audio sample-rate conversion failed.", error: conversionError)
+                return []
+            }
+
+            if let channelData = convertedBuffer.floatChannelData,
+               convertedBuffer.frameLength > 0 {
+                convertedFrames.append(
+                    contentsOf: UnsafeBufferPointer(
+                        start: channelData[0],
+                        count: Int(convertedBuffer.frameLength)
+                    )
+                )
+            }
+
+            switch status {
+            case .haveData:
+                continue
+            case .inputRanDry, .endOfStream, .error:
+                return convertedFrames
+            @unknown default:
+                return convertedFrames
+            }
+        }
     }
 
     #if DEBUG
@@ -313,6 +333,13 @@ private extension AudioRecorder {
             throw AudioRecorderPersistenceError.invalidSerializedAudioData
         }
 
+        let riffChunkSize = UInt32(
+            littleEndian: data[4..<8].withUnsafeBytes { $0.load(as: UInt32.self) }
+        )
+        guard Int(riffChunkSize) == data.count - 8 else {
+            throw AudioRecorderPersistenceError.invalidSerializedAudioData
+        }
+
         var offset = 12
         var audioFormat: UInt16?
         var bitsPerSample: UInt16?
@@ -324,11 +351,12 @@ private extension AudioRecorder {
             let chunkSize = UInt32(littleEndian: data[(offset + 4)..<(offset + 8)].withUnsafeBytes { $0.load(as: UInt32.self) })
             offset += 8
 
-            guard offset + Int(chunkSize) <= data.count else {
+            guard let chunkSizeInt = Int(exactly: chunkSize),
+                  offset + chunkSizeInt <= data.count else {
                 throw AudioRecorderPersistenceError.invalidSerializedAudioData
             }
 
-            let chunkData = data[offset..<(offset + Int(chunkSize))]
+            let chunkData = data[offset..<(offset + chunkSizeInt)]
             let chunkID = String(decoding: chunkIDData, as: UTF8.self)
 
             if chunkID == "fmt " {
@@ -343,7 +371,7 @@ private extension AudioRecorder {
                 sampleData = Data(chunkData)
             }
 
-            offset += Int(chunkSize)
+            offset += chunkSizeInt
             if chunkSize.isMultiple(of: 2) == false {
                 offset += 1
             }
@@ -352,6 +380,7 @@ private extension AudioRecorder {
         guard audioFormat == 1,
               channelCount == 1,
               bitsPerSample == 16,
+              !sampleData.isEmpty,
               sampleData.count.isMultiple(of: 2) else {
             throw AudioRecorderPersistenceError.invalidSerializedAudioData
         }

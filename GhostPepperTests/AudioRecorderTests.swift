@@ -108,6 +108,39 @@ final class AudioRecorderTests: XCTestCase {
         }
     }
 
+    func testArchivedAudioRejectsMalformedRIFFChunkSize() {
+        let samples: [Float] = [0.25, -0.5, 0.75, 0.0]
+        var data = AudioRecorder.serializePlayableArchiveAudioBuffer(samples)
+        let invalidChunkSize = UInt32(0)
+        let invalidChunkSizeData = withUnsafeBytes(of: invalidChunkSize.littleEndian) { Data($0) }
+        data.replaceSubrange(4..<8, with: invalidChunkSizeData)
+
+        XCTAssertThrowsError(try AudioRecorder.deserializeArchivedAudioBuffer(from: data)) { error in
+            XCTAssertEqual(error as? AudioRecorderPersistenceError, .invalidSerializedAudioData)
+        }
+    }
+
+    func testArchivedAudioRejectsEmptyPCMDataChunk() {
+        var data = Data()
+        data.append("RIFF".data(using: .ascii)!)
+        data.append(withUnsafeBytes(of: UInt32(36).littleEndian) { Data($0) })
+        data.append("WAVE".data(using: .ascii)!)
+        data.append("fmt ".data(using: .ascii)!)
+        data.append(withUnsafeBytes(of: UInt32(16).littleEndian) { Data($0) })
+        data.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
+        data.append(withUnsafeBytes(of: UInt16(1).littleEndian) { Data($0) })
+        data.append(withUnsafeBytes(of: UInt32(16_000).littleEndian) { Data($0) })
+        data.append(withUnsafeBytes(of: UInt32(32_000).littleEndian) { Data($0) })
+        data.append(withUnsafeBytes(of: UInt16(2).littleEndian) { Data($0) })
+        data.append(withUnsafeBytes(of: UInt16(16).littleEndian) { Data($0) })
+        data.append("data".data(using: .ascii)!)
+        data.append(withUnsafeBytes(of: UInt32(0).littleEndian) { Data($0) })
+
+        XCTAssertThrowsError(try AudioRecorder.deserializeArchivedAudioBuffer(from: data)) { error in
+            XCTAssertEqual(error as? AudioRecorderPersistenceError, .invalidSerializedAudioData)
+        }
+    }
+
     func testConvertedSamplesAreDeliveredToChunkCallback() throws {
         let recorder = AudioRecorder()
         var deliveredChunks: [[Float]] = []
