@@ -9,14 +9,14 @@ enum MicrophonePermissionStatus: Equatable {
     case notDetermined
 }
 
-class PermissionChecker {
-    struct Client {
-        let checkAccessibility: () -> Bool
-        let promptAccessibility: () -> Void
-        let microphoneStatus: () -> MicrophonePermissionStatus
-        let requestMicrophoneAccess: () async -> Bool
-        let openAccessibilitySettings: () -> Void
-        let openMicrophoneSettings: () -> Void
+enum PermissionChecker {
+    struct Client: Sendable {
+        let checkAccessibility: @Sendable () -> Bool
+        let promptAccessibility: @Sendable () -> Void
+        let microphoneStatus: @Sendable () -> MicrophonePermissionStatus
+        let requestMicrophoneAccess: @Sendable () async -> Bool
+        let openAccessibilitySettings: @Sendable () -> Void
+        let openMicrophoneSettings: @Sendable () -> Void
     }
 
     static let defaultClient: Client = {
@@ -26,7 +26,7 @@ class PermissionChecker {
         return Client.live
     }()
 
-    static var current = defaultClient
+    nonisolated(unsafe) static var current = defaultClient
 
     static func checkAccessibility() -> Bool {
         current.checkAccessibility()
@@ -93,11 +93,11 @@ class PermissionChecker {
 private extension PermissionChecker.Client {
     static let live = PermissionChecker.Client(
         checkAccessibility: {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): false] as CFDictionary
+            let options = ["AXTrustedCheckOptionPrompt" as CFString: false] as CFDictionary
             return AXIsProcessTrustedWithOptions(options)
         },
         promptAccessibility: {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+            let options = ["AXTrustedCheckOptionPrompt" as CFString: true] as CFDictionary
             AXIsProcessTrustedWithOptions(options)
         },
         microphoneStatus: {

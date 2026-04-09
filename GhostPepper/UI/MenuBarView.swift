@@ -3,7 +3,7 @@ import CoreAudio
 import ServiceManagement
 
 struct MenuBarView: View {
-    @ObservedObject var appState: AppState
+    let appState: AppState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -21,8 +21,8 @@ struct MenuBarView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 2)
 
-            if let statusText = statusLine {
-                Text(statusText)
+            if let statusLine {
+                Text(statusLine)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 14)

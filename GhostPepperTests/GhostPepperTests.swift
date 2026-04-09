@@ -44,13 +44,25 @@ private final class FakeAppRelauncher: AppRelaunching {
     }
 }
 
+private final class TestCounterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() {
+        lock.withLock {
+            value += 1
+        }
+    }
+
+    func get() -> Int {
+        lock.withLock { value }
+    }
+}
+
 @MainActor
 final class GhostPepperTests: XCTestCase {
     private func makeDebugLogStore() -> DebugLogStore {
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString, isDirectory: true)
-            .appendingPathComponent("debug-log.json")
-        return DebugLogStore(storageURL: fileURL)
+        DebugLogStore(reader: StaticAppLogStoreReader(result: .success([])))
     }
 
     override func tearDown() {
@@ -1014,13 +1026,13 @@ final class GhostPepperTests: XCTestCase {
     }
 
     func testCheckMicrophoneUsesInjectedClientWithoutSystemPrompt() async {
-        var requestCount = 0
+        let requestCount = TestCounterBox()
         PermissionChecker.current = PermissionChecker.Client(
             checkAccessibility: { false },
             promptAccessibility: {},
             microphoneStatus: { .notDetermined },
             requestMicrophoneAccess: {
-                requestCount += 1
+                requestCount.increment()
                 return true
             },
             openAccessibilitySettings: {},
@@ -1030,7 +1042,7 @@ final class GhostPepperTests: XCTestCase {
         let granted = await PermissionChecker.checkMicrophone()
 
         XCTAssertTrue(granted)
-        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(requestCount.get(), 1)
     }
 
     func testDefaultClientIsNonInteractiveDuringTests() async {

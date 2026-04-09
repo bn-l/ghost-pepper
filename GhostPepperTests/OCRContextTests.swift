@@ -85,7 +85,7 @@ final class OCRContextTests: XCTestCase {
     func testCaptureLogsGenericOCRMessageWithoutIncludingCapturedText() async {
         let captureService = SpyWindowCaptureService()
         captureService.nextImage = TestImageFactory.makeCGImage()
-        var regularMessages: [String] = []
+        let logging = makeTestLogger(category: .ocr)
         let service = FrontmostWindowOCRService(
             permissionProvider: { true },
             windowCaptureService: captureService,
@@ -93,13 +93,11 @@ final class OCRContextTests: XCTestCase {
                 "hello from ocr"
             }
         )
-        service.debugLogger = { _, message in
-            regularMessages.append(message)
-        }
+        service.logger = logging.logger
 
         _ = await service.captureContext(customWords: [])
 
-        XCTAssertTrue(regularMessages.contains(where: { $0 == "Frontmost-window OCR captured text." }))
-        XCTAssertFalse(regularMessages.contains(where: { $0.contains("hello from ocr") }))
+        XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "capture.success" }))
+        XCTAssertFalse(logging.observer.records.contains(where: { $0.searchableText.contains("hello from ocr") }))
     }
 }

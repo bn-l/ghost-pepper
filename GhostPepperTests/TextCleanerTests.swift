@@ -181,10 +181,8 @@ final class TextCleanerTests: XCTestCase {
             localBackend: localBackend,
             correctionStore: correctionStore
         )
-        var debugMessages: [String] = []
-        cleaner.debugLogger = { _, message in
-            debugMessages.append(message)
-        }
+        let logging = makeTestLogger(category: .cleanup)
+        cleaner.logger = logging.logger
 
         let result = await cleaner.clean(
             text: "chat gbt is ready",
@@ -192,10 +190,10 @@ final class TextCleanerTests: XCTestCase {
         )
 
         XCTAssertEqual(result, "ghost-pepper is ready")
-        XCTAssertTrue(debugMessages.contains("Applied deterministic corrections before local cleanup."))
-        XCTAssertFalse(debugMessages.contains(where: { $0.contains("chat gbt is ready") }))
-        XCTAssertFalse(debugMessages.contains(where: { $0.contains("Use OCR context if present.") }))
-        XCTAssertFalse(debugMessages.contains(where: { $0.contains("ghost-pepper is ready") }))
+        XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "deterministic.pre_cleanup_applied" }))
+        XCTAssertFalse(logging.observer.records.contains(where: { $0.searchableText.contains("chat gbt is ready") }))
+        XCTAssertFalse(logging.observer.records.contains(where: { $0.searchableText.contains("Use OCR context if present.") }))
+        XCTAssertFalse(logging.observer.records.contains(where: { $0.searchableText.contains("ghost-pepper is ready") }))
     }
 
     func testCleanerReportsModelAndPostProcessingDurations() async {

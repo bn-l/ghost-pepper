@@ -15,9 +15,10 @@ enum PasteResult: Equatable {
 /// Pastes transcribed text into the focused text field by simulating Cmd+V.
 /// Saves and restores the clipboard around the paste operation to avoid clobbering user data.
 /// Requires Accessibility permission for CGEvent posting.
-final class TextPaster {
+final class TextPaster: @unchecked Sendable {
     typealias PasteSessionProvider = @Sendable (String, Date) -> PasteSession?
-    typealias PasteScheduler = (TimeInterval, @escaping () -> Void) -> Void
+    typealias PasteAction = @Sendable () -> Void
+    typealias PasteScheduler = (TimeInterval, @escaping @Sendable () -> Void) -> Void
 
     struct AccessibilitySnapshot {
         let role: String?
@@ -74,18 +75,21 @@ final class TextPaster {
     private let pasteSessionProvider: PasteSessionProvider
     private let pasteboard: NSPasteboard
     private let canPasteIntoFocusedElement: () -> Bool
-    private let prepareCommandV: () -> (() -> Void)?
+    private let prepareCommandV: () -> PasteAction?
     private let schedule: PasteScheduler
 
     init(
         pasteboard: NSPasteboard = .general,
         canPasteIntoFocusedElement: @escaping () -> Bool = { TextPaster.defaultCanPasteIntoFocusedElement() },
-        prepareCommandV: @escaping () -> (() -> Void)? = { TextPaster.defaultCommandVPasteAction() },
+        prepareCommandV: @escaping () -> PasteAction? = { TextPaster.defaultCommandVPasteAction() },
         pasteSessionProvider: @escaping PasteSessionProvider = { text, date in
             FocusedElementLocator().capturePasteSession(for: text, at: date)
         },
         schedule: @escaping PasteScheduler = { delay, action in
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: action)
+            Task {
+                try? await Task.sleep(for: .seconds(delay))
+                action()
+            }
         }
     ) {
         self.pasteboard = pasteboard
@@ -167,11 +171,11 @@ final class TextPaster {
             self?.schedule(Self.postKeystrokeDelay) { [weak self] in
                 guard let self else { return }
 
-                if let pasteSession = self.pasteSessionProvider(text, Date()) {
+                if let pasteSession = self.pasteSessionProvider(text, .now) {
                     self.onPaste?(pasteSession)
                 }
 
-                if let savedState = savedState {
+                if let savedState {
                     self.restoreClipboard(savedState)
                 }
 
@@ -378,17 +382,16 @@ final class TextPaster {
 
     // MARK: - Key Simulation
 
-    private static func defaultCommandVPasteAction() -> (() -> Void)? {
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: false) else {
-            return nil
-        }
+    private static func defaultCommandVPasteAction() -> PasteAction? {
+        {
+            let source = CGEventSource(stateID: .hidSystemState)
+            guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: true),
+                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: false) else {
+                return
+            }
 
-        keyDown.flags = .maskCommand
-        keyUp.flags = .maskCommand
-
-        return {
+            keyDown.flags = .maskCommand
+            keyUp.flags = .maskCommand
             keyDown.post(tap: .cghidEventTap)
             keyUp.post(tap: .cghidEventTap)
         }

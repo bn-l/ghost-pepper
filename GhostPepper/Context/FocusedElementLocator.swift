@@ -20,7 +20,7 @@ final class FocusedElementLocator {
         let status: Status
     }
 
-    fileprivate final class PasteTargetMonitor {
+    fileprivate final class PasteTargetMonitor: @unchecked Sendable {
         private var activationObserver: NSObjectProtocol?
         private var axObserver: AXObserver?
         private var observedProcessID: pid_t?
@@ -275,7 +275,7 @@ final class FocusedElementLocator {
         )
     }
 
-    func capturePasteSession(for text: String, at date: Date = Date()) -> PasteSession? {
+    func capturePasteSession(for text: String, at date: Date = .now) -> PasteSession? {
         guard let application = NSWorkspace.shared.frontmostApplication else {
             return nil
         }

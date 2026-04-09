@@ -1,10 +1,12 @@
 import Foundation
-import FluidAudio
-import WhisperKit
+@preconcurrency import FluidAudio
+import Observation
+@preconcurrency import WhisperKit
 
 /// Manages local speech model lifecycle: download, load, and readiness state.
 @MainActor
-final class ModelManager: ObservableObject {
+@Observable
+final class ModelManager: @unchecked Sendable {
     typealias ModelLoadOverride = @MainActor (SpeechModelDescriptor) async throws -> Void
     typealias RetryDelayOverride = @MainActor () async -> Void
 
@@ -12,19 +14,19 @@ final class ModelManager: ObservableObject {
     private var fluidAudioManager: AsrManager?
     private var sortformerModels: SortformerModels?
 
-    @Published private(set) var state: ModelManagerState = .idle
-    @Published private(set) var downloadProgress: Double?
+    private(set) var state: ModelManagerState = .idle
+    private(set) var downloadProgress: Double?
     private(set) var modelName: String
-    @Published private(set) var error: Error?
+    private(set) var error: Error?
 
-    var debugLogger: ((DebugLogCategory, String) -> Void)?
+    var logger: AppLogger?
 
     var isReady: Bool {
         state == .ready
     }
 
     static let availableModels = SpeechModelCatalog.availableModels
-    private static let retryDelayNanoseconds: UInt64 = 500_000_000
+    private static let retryDelayDuration: Duration = .milliseconds(500)
 
     var cachedModelNames: Set<String> {
         Self.availableModels.reduce(into: Set<String>()) { names, model in
@@ -71,7 +73,7 @@ final class ModelManager: ObservableObject {
 
         state = .loading
         error = nil
-        debugLogger?(.model, "Loading speech model \(modelName).")
+        logger?.info("speech.load_started", "Loading speech model.", fields: ["modelName": modelName])
 
         do {
             do {
@@ -81,17 +83,17 @@ final class ModelManager: ObservableObject {
                     throw error
                 }
 
-                debugLogger?(.model, "Speech model \(modelName) load timed out. Retrying once.")
+                logger?.warning("speech.load_retry", "Speech model load timed out. Retrying once.", fields: ["modelName": modelName], error: error)
                 clearLoadedModelInstances()
                 await retryLoadDelay()
                 try await loadRequestedModel(requestedModel)
             }
             self.state = .ready
-            debugLogger?(.model, "Speech model \(modelName) loaded successfully.")
+            logger?.notice("speech.load_succeeded", "Speech model loaded successfully.", fields: ["modelName": modelName])
         } catch {
             self.error = error
             self.state = .error
-            debugLogger?(.model, "Speech model \(modelName) failed to load: \(error.localizedDescription)")
+            logger?.error("speech.load_failed", "Speech model failed to load.", fields: ["modelName": modelName], error: error)
         }
     }
 
@@ -131,7 +133,7 @@ final class ModelManager: ObservableObject {
                 return cleaned.isEmpty ? nil : cleaned
             }
         } catch {
-            debugLogger?(.model, "Speech transcription failed for \(modelName): \(error.localizedDescription)")
+            logger?.warning("speech.transcription_failed", "Speech transcription failed.", fields: ["modelName": modelName], error: error)
             return nil
         }
     }
@@ -157,10 +159,7 @@ final class ModelManager: ObservableObject {
                     do {
                         _ = try diarizer.processSamples(samples)
                     } catch {
-                        self.debugLogger?(
-                            .model,
-                            "Speaker filtering diarization chunk failed: \(error.localizedDescription)"
-                        )
+                        self.logger?.warning("speaker_filter.chunk_failed", "Speaker filtering diarization chunk failed.", error: error)
                     }
                 },
                 finish: {
@@ -172,7 +171,7 @@ final class ModelManager: ObservableObject {
                 }
             )
         } catch {
-            debugLogger?(.model, "Speaker filtering diarizer failed to load: \(error.localizedDescription)")
+            logger?.warning("speaker_filter.load_failed", "Speaker filtering diarizer failed to load.", error: error)
             return nil
         }
     }
@@ -183,12 +182,12 @@ final class ModelManager: ObservableObject {
 
         let needsDownload = !Self.modelIsCached(SpeechModelCatalog.model(named: modelName)!)
         if needsDownload {
-            _ = try await WhisperKit.download(
+            _ = try await Self.downloadWhisperModelFiles(
                 variant: modelName,
                 downloadBase: modelsDir
-            ) { progress in
-                Task { @MainActor [weak self] in
-                    self?.downloadProgress = progress.fractionCompleted
+            ) { [weak self] progress in
+                await MainActor.run {
+                    self?.downloadProgress = progress
                 }
             }
             downloadProgress = nil
@@ -221,9 +220,9 @@ final class ModelManager: ObservableObject {
             version = .v3
         }
 
-        let models = try await AsrModels.downloadAndLoad(version: version) { progress in
-            Task { @MainActor [weak self] in
-                self?.downloadProgress = progress.fractionCompleted
+        let models = try await Self.downloadFluidAudioModels(version: version) { [weak self] progress in
+            await MainActor.run {
+                self?.downloadProgress = progress
             }
         }
         downloadProgress = nil
@@ -250,7 +249,7 @@ final class ModelManager: ObservableObject {
             return
         }
 
-        try? await Task.sleep(nanoseconds: Self.retryDelayNanoseconds)
+        try? await Task.sleep(for: Self.retryDelayDuration)
     }
 
     private func loadSortformerModels() async throws -> SortformerModels {
@@ -326,6 +325,36 @@ final class ModelManager: ObservableObject {
 
     private static var whisperModelsRootDirectory: URL {
         whisperModelsDirectory.appendingPathComponent("models", isDirectory: true)
+    }
+
+    nonisolated private static func downloadWhisperModelFiles(
+        variant: String,
+        downloadBase: URL,
+        updateProgress: @escaping @Sendable (Double) async -> Void
+    ) async throws -> URL {
+        try await WhisperKit.download(
+            variant: variant,
+            downloadBase: downloadBase,
+            progressCallback: { progress in
+                Task {
+                    await updateProgress(progress.fractionCompleted)
+                }
+            }
+        )
+    }
+
+    nonisolated private static func downloadFluidAudioModels(
+        version: AsrModelVersion,
+        updateProgress: @escaping @Sendable (Double) async -> Void
+    ) async throws -> AsrModels {
+        try await AsrModels.downloadAndLoad(
+            version: version,
+            progressHandler: { progress in
+                Task {
+                    await updateProgress(progress.fractionCompleted)
+                }
+            }
+        )
     }
 }
 

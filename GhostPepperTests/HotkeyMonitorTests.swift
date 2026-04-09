@@ -348,7 +348,7 @@ final class HotkeyMonitorTests: XCTestCase {
             eventProcessor: { work in work() }
         )
         var events: [String] = []
-        var logs: [String] = []
+        let logging = makeTestLogger(category: .hotkey)
 
         monitor.onRecordingStart = {
             events.append("start")
@@ -356,15 +356,13 @@ final class HotkeyMonitorTests: XCTestCase {
         monitor.onRecordingStop = {
             events.append("stop")
         }
-        monitor.debugLogger = { _, message in
-            logs.append(message)
-        }
+        monitor.logger = logging.logger
 
         monitor.handleInput(.keyDown(a))
         monitor.handleInput(.keyUp(a))
 
         XCTAssertEqual(events, [])
-        XCTAssertEqual(logs, [])
+        XCTAssertTrue(logging.observer.records.isEmpty)
     }
 
     func testFlagsChangedSnapshotsDoNotRestartChordFromStaleModifierState() throws {

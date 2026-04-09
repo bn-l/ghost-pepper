@@ -19,11 +19,11 @@ final class RecordingOCRPrefetch {
     func start(customWords: [String]) {
         cancel()
         task = Task {
-            let start = Date()
+            let start = Date.now
             let context = await capture(customWords)
             return RecordingOCRPrefetchResult(
                 context: context,
-                elapsed: Date().timeIntervalSince(start)
+                elapsed: Date.now.timeIntervalSince(start)
             )
         }
     }

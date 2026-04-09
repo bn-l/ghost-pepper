@@ -1,10 +1,10 @@
 import Foundation
 
-protocol PrivacyMaintaining {
+protocol PrivacyMaintaining: Sendable {
     func run(defaults: UserDefaults)
 }
 
-struct PrivacyMaintenance: PrivacyMaintaining {
+struct PrivacyMaintenance: PrivacyMaintaining, @unchecked Sendable {
     private static let cleanupVersionDefaultsKey = "privacyCleanupVersion"
     private static let currentCleanupVersion = 1
     private static let staleDefaultsKeys = [
@@ -17,7 +17,7 @@ struct PrivacyMaintenance: PrivacyMaintaining {
     private let applicationSupportURL: URL?
     private let fileManager: FileManager
 
-    static let defaultClient: PrivacyMaintaining = {
+    static let defaultClient: PrivacyMaintenance = {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return PrivacyMaintenance(applicationSupportURL: nil)
         }

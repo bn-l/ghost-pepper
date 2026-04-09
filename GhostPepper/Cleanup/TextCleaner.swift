@@ -31,16 +31,17 @@ struct TextCleanerResult {
 }
 
 final class TextCleaner {
-    private static let thinkBlockExpression = try? NSRegularExpression(
-        pattern: #"(?is)<think\b[^>]*>.*?</think>"#
-    )
-    private static let leadingThinkTagExpression = try? NSRegularExpression(
-        pattern: #"(?is)^\s*<think\b[^>]*>"#
-    )
+    private static var thinkBlockExpression: Regex<Substring> {
+        #/(?is)<think\b[^>]*>.*?<\/think>/#
+    }
+
+    private static var leadingThinkTagExpression: Regex<Substring> {
+        #/(?is)^\s*<think\b[^>]*>/#
+    }
 
     private let localBackend: CleanupBackend
     private let correctionStore: CorrectionStore
-    var debugLogger: ((DebugLogCategory, String) -> Void)?
+    var logger: AppLogger?
 
     static let defaultPrompt = """
     Your job is to clean up transcribed audio. The audio transcription engine can make mistakes and will sometimes transcribe things in a way that is not how they should be written in text.
@@ -92,6 +93,7 @@ final class TextCleaner {
         self.correctionStore = correctionStore
     }
 
+    @MainActor
     convenience init(
         cleanupManager: TextCleaningManaging,
         correctionStore: CorrectionStore = CorrectionStore()
@@ -126,33 +128,33 @@ final class TextCleaner {
         let correctedText = correctionEngine.applyPreCleanupCorrections(to: text)
         let formattedInput = Self.formatCleanupInput(userInput: correctedText)
         if correctedText != text {
-            debugLogger?(.cleanup, "Applied deterministic corrections before local cleanup.")
+            logger?.info("deterministic.pre_cleanup_applied", "Applied deterministic corrections before local cleanup.")
         }
 
-        let modelCallStart = Date()
+        let modelCallStart = Date.now
         do {
             let cleanedText = try await localBackend.clean(
                 text: formattedInput,
                 prompt: activePrompt,
                 modelKind: modelKind
             )
-            let modelCallDuration = Date().timeIntervalSince(modelCallStart)
-            let postProcessStart = Date()
+            let modelCallDuration = Date.now.timeIntervalSince(modelCallStart)
+            let postProcessStart = Date.now
             let sanitizedText = Self.sanitizeCleanupOutput(cleanedText)
 
             if sanitizedText != cleanedText {
-                debugLogger?(.cleanup, "Stripped model reasoning tags from cleanup output.")
+                logger?.info("sanitize.reasoning_tags_removed", "Stripped model reasoning tags from cleanup output.")
             }
 
             let finalText = correctionEngine.applyPostCleanupCorrections(to: sanitizedText)
             if finalText != sanitizedText {
-                debugLogger?(.cleanup, "Applied deterministic corrections after local cleanup.")
+                logger?.info("deterministic.post_cleanup_applied", "Applied deterministic corrections after local cleanup.")
             }
             return TextCleanerResult(
                 text: finalText,
                 performance: TextCleanerPerformance(
                     modelCallDuration: modelCallDuration,
-                    postProcessDuration: Date().timeIntervalSince(postProcessStart)
+                    postProcessDuration: Date.now.timeIntervalSince(postProcessStart)
                 ),
                 transcript: TextCleanerTranscript(
                     prompt: activePrompt,
@@ -162,15 +164,15 @@ final class TextCleaner {
                 usedFallback: false
             )
         } catch let error as CleanupBackendError {
-            let postProcessStart = Date()
+            let postProcessStart = Date.now
             let finalText = correctionEngine.applyPostCleanupCorrections(to: correctedText)
-            let postProcessDuration = Date().timeIntervalSince(postProcessStart)
+            let postProcessDuration = Date.now.timeIntervalSince(postProcessStart)
 
             switch error {
             case .unavailable:
-                debugLogger?(.cleanup, "Cleanup backend unavailable, returning deterministic corrections only.")
+                logger?.warning("backend.unavailable", "Cleanup backend unavailable, returning deterministic corrections only.")
                 if finalText != correctedText {
-                    debugLogger?(.cleanup, "Applied deterministic corrections without a cleanup model.")
+                    logger?.info("deterministic.fallback_applied", "Applied deterministic corrections without a cleanup model.")
                 }
                 return TextCleanerResult(
                     text: finalText,
@@ -181,11 +183,10 @@ final class TextCleaner {
                     usedFallback: true
                 )
             case .unusableOutput(let rawOutput):
-                let modelCallDuration = Date().timeIntervalSince(modelCallStart)
-                let sanitizedOutput = Self.sanitizeCleanupOutput(rawOutput)
-                debugLogger?(.cleanup, "Cleanup model returned unusable output, falling back to deterministic corrections.")
+                let modelCallDuration = Date.now.timeIntervalSince(modelCallStart)
+                logger?.warning("backend.unusable_output", "Cleanup model returned unusable output, falling back to deterministic corrections.")
                 if finalText != correctedText {
-                    debugLogger?(.cleanup, "Applied deterministic corrections after unusable cleanup output.")
+                    logger?.info("deterministic.unusable_output_applied", "Applied deterministic corrections after unusable cleanup output.")
                 }
                 return TextCleanerResult(
                     text: finalText,
@@ -202,17 +203,17 @@ final class TextCleaner {
                 )
             }
         } catch {
-            debugLogger?(.cleanup, "Cleanup backend unavailable, returning deterministic corrections only.")
-            let postProcessStart = Date()
+            logger?.warning("backend.failed", "Cleanup backend unavailable, returning deterministic corrections only.", error: error)
+            let postProcessStart = Date.now
             let finalText = correctionEngine.applyPostCleanupCorrections(to: correctedText)
             if finalText != correctedText {
-                debugLogger?(.cleanup, "Applied deterministic corrections after unexpected cleanup failure.")
+                logger?.info("deterministic.unexpected_failure_applied", "Applied deterministic corrections after unexpected cleanup failure.")
             }
             return TextCleanerResult(
                 text: finalText,
                 performance: TextCleanerPerformance(
                     modelCallDuration: nil,
-                    postProcessDuration: Date().timeIntervalSince(postProcessStart)
+                    postProcessDuration: Date.now.timeIntervalSince(postProcessStart)
                 ),
                 usedFallback: true
             )
@@ -230,17 +231,9 @@ final class TextCleaner {
     static func sanitizeCleanupOutput(_ text: String) -> String {
         var sanitizedText = text
 
-        if let expression = Self.thinkBlockExpression {
-            let range = NSRange(sanitizedText.startIndex..., in: sanitizedText)
-            sanitizedText = expression.stringByReplacingMatches(in: sanitizedText, range: range, withTemplate: "")
-        }
-
-        if let leadingThinkTagExpression = Self.leadingThinkTagExpression {
-            let range = NSRange(sanitizedText.startIndex..., in: sanitizedText)
-            if let match = leadingThinkTagExpression.firstMatch(in: sanitizedText, range: range),
-               let thinkStart = Range(match.range, in: sanitizedText)?.lowerBound {
-                sanitizedText = String(sanitizedText[..<thinkStart])
-            }
+        sanitizedText = sanitizedText.replacing(Self.thinkBlockExpression, with: "")
+        if let match = sanitizedText.firstMatch(of: Self.leadingThinkTagExpression) {
+            sanitizedText = String(sanitizedText[..<match.range.lowerBound])
         }
 
         return sanitizedText.trimmingCharacters(in: .whitespacesAndNewlines)

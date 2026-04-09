@@ -1,5 +1,5 @@
-import Combine
 import Foundation
+import Observation
 
 struct MisheardReplacement: Codable, Equatable, Hashable, Sendable {
     let wrong: String
@@ -11,11 +11,12 @@ struct MisheardReplacement: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-final class CorrectionStore: ObservableObject {
-    @Published private(set) var preferredTranscriptions: [String]
-    @Published private(set) var commonlyMisheard: [MisheardReplacement]
-    @Published private(set) var preferredTranscriptionsDraft: String
-    @Published private(set) var commonlyMisheardDraft: String
+@Observable
+final class CorrectionStore {
+    private(set) var preferredTranscriptions: [String]
+    private(set) var commonlyMisheard: [MisheardReplacement]
+    private(set) var preferredTranscriptionsDraft: String
+    private(set) var commonlyMisheardDraft: String
 
     var preferredOCRCustomWords: [String] {
         preferredTranscriptions

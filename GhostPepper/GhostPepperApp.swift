@@ -1,10 +1,9 @@
 import SwiftUI
-import Combine
 
 @main
 struct GhostPepperApp: App {
     private static let automaticTerminationReason = "Ghost Pepper keeps a persistent menu bar presence."
-    @StateObject private var appState = AppState()
+    @State private var appState = AppState()
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
     @State private var hasInitialized = false
     private let onboardingController = OnboardingWindowController()
@@ -54,9 +53,11 @@ struct GhostPepperApp: App {
                     }
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                ProcessInfo.processInfo.enableAutomaticTermination(Self.automaticTerminationReason)
-                appState.prepareForTermination()
+            .task {
+                for await _ in NotificationCenter.default.notifications(named: NSApplication.willTerminateNotification) {
+                    ProcessInfo.processInfo.enableAutomaticTermination(Self.automaticTerminationReason)
+                    appState.prepareForTermination()
+                }
             }
         }
     }

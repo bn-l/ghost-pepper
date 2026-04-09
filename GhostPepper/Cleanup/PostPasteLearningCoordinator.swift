@@ -5,7 +5,7 @@ struct PostPasteLearningObservation: Equatable, Sendable {
     let text: String
 }
 
-final class PostPasteLearningCoordinator {
+final class PostPasteLearningCoordinator: @unchecked Sendable {
     typealias Scheduler = @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
     typealias Revisit = @Sendable (PasteSession) async -> PostPasteLearningObservation?
 
@@ -23,13 +23,16 @@ final class PostPasteLearningCoordinator {
     private let scheduler: Scheduler
     private let revisit: Revisit
 
-    var debugLogger: ((DebugLogCategory, String) -> Void)?
+    var logger: AppLogger?
 
     init(
         correctionStore: CorrectionStore,
         learningEnabled: Bool = true,
         scheduler: @escaping Scheduler = { delay, work in
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(delay))
+                work()
+            }
         },
         revisit: @escaping Revisit
     ) {
@@ -41,11 +44,11 @@ final class PostPasteLearningCoordinator {
 
     func handlePaste(_ session: PasteSession) {
         guard learningEnabled else {
-            debugLogger?(.cleanup, "Post-paste learning skipped because it is disabled.")
+            logger?.info("learning.disabled", "Post-paste learning skipped because it is disabled.")
             return
         }
 
-        debugLogger?(.cleanup, "Scheduled post-paste learning polling session.")
+        logger?.info("learning.poll_scheduled", "Scheduled post-paste learning polling session.")
         schedulePoll(
             for: session,
             progress: LearningProgress(
@@ -68,7 +71,7 @@ final class PostPasteLearningCoordinator {
 
     private func poll(session: PasteSession, progress: LearningProgress) async {
         guard learningEnabled else {
-            debugLogger?(.cleanup, "Post-paste learning skipped because it is disabled.")
+            logger?.info("learning.disabled", "Post-paste learning skipped because it is disabled.")
             return
         }
 
@@ -80,20 +83,21 @@ final class PostPasteLearningCoordinator {
             if nextProgress.baselineText == nil {
                 nextProgress.baselineText = observedText
                 nextProgress.latestObservedText = observedText
-                debugLogger?(.cleanup, "Post-paste learning captured initial text-field snapshot during polling.")
+                logger?.trace("learning.baseline_captured", "Post-paste learning captured the initial text-field snapshot during polling.")
             } else if !Self.stringsMatch(observedText, nextProgress.latestObservedText ?? "") {
                 nextProgress.latestObservedText = observedText
                 nextProgress.stablePollCount = 0
-                debugLogger?(.cleanup, "Post-paste learning observed text-field edits and is waiting for them to settle.")
+                logger?.trace("learning.waiting_for_quiescence", "Post-paste learning observed text-field edits and is waiting for them to settle.")
             } else if nextProgress.latestObservedText != nil {
                 nextProgress.stablePollCount += 1
-                debugLogger?(
-                    .cleanup,
-                    "Post-paste learning observed \(nextProgress.stablePollCount)s of text-field quiescence."
+                logger?.trace(
+                    "learning.quiescence",
+                    "Post-paste learning observed text-field quiescence.",
+                    fields: ["stablePollCount": String(nextProgress.stablePollCount)]
                 )
             }
         } else {
-            debugLogger?(.cleanup, "Post-paste learning poll found no readable focused text field.")
+            logger?.trace("learning.no_readable_field", "Post-paste learning poll found no readable focused text field.")
         }
 
         if let baselineText = nextProgress.baselineText,
@@ -104,7 +108,7 @@ final class PostPasteLearningCoordinator {
         }
 
         if nextProgress.completedPollCount >= Self.maximumPollCount {
-            debugLogger?(.cleanup, "Post-paste learning skipped because the polling window expired without a stable correction.")
+            logger?.info("learning.poll_expired", "Post-paste learning skipped because the polling window expired without a stable correction.")
             return
         }
 
@@ -117,18 +121,18 @@ final class PostPasteLearningCoordinator {
             to: observedText,
             constrainedTo: pastedText
         ) else {
-            debugLogger?(.cleanup, "Post-paste learning skipped because no narrow correction could be inferred.")
+            logger?.info("learning.no_replacement", "Post-paste learning skipped because no narrow correction could be inferred.")
             return
         }
 
         guard learningEnabled else {
-            debugLogger?(.cleanup, "Post-paste learning skipped because it was disabled before storing.")
+            logger?.info("learning.disabled_before_store", "Post-paste learning skipped because it was disabled before storing.")
             return
         }
 
         await MainActor.run {
             guard self.learningEnabled else {
-                self.debugLogger?(.cleanup, "Post-paste learning skipped because it was disabled before storing.")
+                self.logger?.info("learning.disabled_before_store", "Post-paste learning skipped because it was disabled before storing.")
                 return
             }
 
@@ -138,7 +142,14 @@ final class PostPasteLearningCoordinator {
 
     private func store(_ replacement: MisheardReplacement) {
         correctionStore.appendCommonlyMisheard(replacement)
-        debugLogger?(.cleanup, "Post-paste learning learned replacement: \(replacement.wrong) -> \(replacement.right)")
+        logger?.notice(
+            "learning.replacement_learned",
+            "Post-paste learning learned a replacement.",
+            fields: [
+                "wrongWordCount": String(Self.wordCount(in: replacement.wrong)),
+                "rightWordCount": String(Self.wordCount(in: replacement.right))
+            ]
+        )
         onLearnedCorrection?(replacement)
     }
 

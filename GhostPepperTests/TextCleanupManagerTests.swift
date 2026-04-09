@@ -5,24 +5,25 @@ import XCTest
 final class TextCleanupManagerTests: XCTestCase {
     actor ProbeConcurrencyHarness {
         private var isRunning = false
+        private let fastModelDisplayName = "Qwen 3.5 2B Q4_K_M (Fast)"
 
         func run(text: String) async -> CleanupModelProbeRawResult {
             if isRunning {
                 return CleanupModelProbeRawResult(
                     modelKind: .qwen35_2b_q4_k_m,
-                    modelDisplayName: TextCleanupManager.recommendedFastModel.displayName,
+                    modelDisplayName: fastModelDisplayName,
                     rawOutput: "",
                     elapsed: 0
                 )
             }
 
             isRunning = true
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             isRunning = false
 
             return CleanupModelProbeRawResult(
                 modelKind: .qwen35_2b_q4_k_m,
-                modelDisplayName: TextCleanupManager.recommendedFastModel.displayName,
+                modelDisplayName: fastModelDisplayName,
                 rawOutput: text,
                 elapsed: 0.05
             )

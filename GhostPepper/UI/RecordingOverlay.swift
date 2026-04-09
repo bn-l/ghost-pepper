@@ -41,17 +41,18 @@ enum OverlayMessage: Equatable {
     }
 }
 
-class RecordingOverlayController {
+@MainActor
+final class RecordingOverlayController {
     private var panel: NSPanel?
     private var hostingView: NSHostingView<OverlayPillView>?
-    private var dismissWorkItem: DispatchWorkItem?
+    private var dismissTask: Task<Void, Never>?
     private var currentMessage: OverlayMessage?
 
     func show(message: OverlayMessage = .recording) {
-        dismissWorkItem?.cancel()
-        dismissWorkItem = nil
+        dismissTask?.cancel()
+        dismissTask = nil
 
-        if let hostingView = hostingView, let panel = panel {
+        if let hostingView, let panel {
             let size = panelSize(for: message)
             hostingView.rootView = OverlayPillView(message: message)
             panel.setContentSize(size)
@@ -97,8 +98,8 @@ class RecordingOverlayController {
     }
 
     func dismiss() {
-        dismissWorkItem?.cancel()
-        dismissWorkItem = nil
+        dismissTask?.cancel()
+        dismissTask = nil
         panel?.orderOut(nil)
         panel = nil
         hostingView = nil
@@ -134,11 +135,10 @@ class RecordingOverlayController {
     private func scheduleDismissIfNeeded(for message: OverlayMessage) {
         switch message {
         case .clipboardFallback, .learnedCorrection, .noSoundDetected:
-            let workItem = DispatchWorkItem { [weak self] in
+            dismissTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(3))
                 self?.dismiss()
             }
-            dismissWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: workItem)
         default:
             return
         }

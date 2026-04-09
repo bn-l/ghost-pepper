@@ -1,5 +1,6 @@
 import Foundation
 
+@MainActor
 protocol CleanupBackend: AnyObject {
     func clean(text: String, prompt: String, modelKind: LocalCleanupModelKind?) async throws -> String
 }

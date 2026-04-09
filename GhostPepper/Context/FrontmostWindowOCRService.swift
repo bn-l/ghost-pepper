@@ -1,7 +1,7 @@
 import CoreGraphics
 import Foundation
 
-final class FrontmostWindowOCRService {
+final class FrontmostWindowOCRService: @unchecked Sendable {
     typealias PermissionProvider = @Sendable () -> Bool
     typealias TextRecognizer = @Sendable (CGImage, [String]) async throws -> String?
 
@@ -9,10 +9,10 @@ final class FrontmostWindowOCRService {
     private let windowCaptureService: WindowCaptureServing
     private let recognizeText: TextRecognizer
 
-    var debugLogger: ((DebugLogCategory, String) -> Void)?
+    var logger: AppLogger?
 
     init(
-        permissionProvider: @escaping PermissionProvider = PermissionChecker.hasScreenRecordingPermission,
+        permissionProvider: @escaping PermissionProvider = { PermissionChecker.hasScreenRecordingPermission() },
         windowCaptureService: WindowCaptureServing = WindowCaptureService(),
         requestFactory: OCRRequestFactory = OCRRequestFactory()
     ) {
@@ -37,17 +37,21 @@ final class FrontmostWindowOCRService {
         do {
             guard let image = try await windowCaptureService.captureFrontmostWindowImage(),
                   let text = try await recognizeText(image, customWords) else {
-                debugLogger?(.ocr, "Frontmost-window OCR produced no text.")
+                logger?.info("capture.empty", "Frontmost-window OCR produced no text.")
                 return nil
             }
 
-            debugLogger?(.ocr, "Frontmost-window OCR captured text.")
+            logger?.info("capture.success", "Frontmost-window OCR captured text.")
             return OCRContext(windowContents: text)
         } catch {
             if !permissionProvider() {
-                debugLogger?(.ocr, "Frontmost-window OCR failed while Screen Recording permission appears unavailable: \(error.localizedDescription)")
+                logger?.warning(
+                    "capture.permission_unavailable",
+                    "Frontmost-window OCR failed while Screen Recording permission appears unavailable.",
+                    error: error
+                )
             } else {
-                debugLogger?(.ocr, "Frontmost-window OCR failed: \(error.localizedDescription)")
+                logger?.warning("capture.failed", "Frontmost-window OCR failed.", error: error)
             }
             return nil
         }

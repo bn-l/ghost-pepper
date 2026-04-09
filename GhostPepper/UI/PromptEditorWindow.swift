@@ -1,11 +1,12 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 final class PromptEditorController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
     func show(appState: AppState) {
-        if let window = window {
+        if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -50,8 +51,8 @@ final class PromptEditorController: NSObject, NSWindowDelegate {
 }
 
 struct PromptEditorView: View {
-    @ObservedObject var appState: AppState
-    let onClose: () -> Void
+    let appState: AppState
+    let onClose: @MainActor () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -62,7 +63,10 @@ struct PromptEditorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            TextEditor(text: $appState.cleanupPrompt)
+            TextEditor(text: Binding(
+                get: { appState.cleanupPrompt },
+                set: { appState.cleanupPrompt = $0 }
+            ))
                 .font(.body)
                 .frame(minHeight: 250)
 

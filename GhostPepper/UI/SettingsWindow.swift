@@ -1,13 +1,13 @@
 import SwiftUI
 import AppKit
-import CoreAudio
+import Observation
 import ServiceManagement
 
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
     func show(appState: AppState) {
-        if let window = window {
+        if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -40,32 +40,46 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
 }
 
 @MainActor
-final class SettingsDictationTestController: ObservableObject {
-    @Published private(set) var isRecording = false
-    @Published private(set) var isTranscribing = false
-    @Published private(set) var transcript: String?
-    @Published private(set) var lastError: String?
+@Observable
+final class SettingsDictationTestController {
+    private(set) var isRecording = false
+    private(set) var isTranscribing = false
+    private(set) var transcript: String?
+    private(set) var lastError: String?
 
     private var recorder: AudioRecorder?
     private let transcriber: SpeechTranscriber
+    private let audioInputCoordinator: AudioInputCoordinator
+    private let recorderFactory: () -> AudioRecorder
 
-    init(transcriber: SpeechTranscriber) {
+    init(
+        transcriber: SpeechTranscriber,
+        audioInputCoordinator: AudioInputCoordinator,
+        recorderFactory: @escaping () -> AudioRecorder
+    ) {
         self.transcriber = transcriber
+        self.audioInputCoordinator = audioInputCoordinator
+        self.recorderFactory = recorderFactory
     }
 
     func start() {
         guard !isRecording else { return }
-        let recorder = AudioRecorder()
-        recorder.prewarm()
+        transcript = nil
+        lastError = nil
 
-        do {
-            try recorder.startRecording()
-            self.recorder = recorder
-            transcript = nil
-            lastError = nil
-            isRecording = true
-        } catch {
-            lastError = "Could not start recording."
+        Task {
+            let recorder = recorderFactory()
+            recorder.prewarm()
+            await audioInputCoordinator.pausePreviewForCapture()
+
+            do {
+                try await recorder.startRecording()
+                self.recorder = recorder
+                self.isRecording = true
+            } catch {
+                audioInputCoordinator.resumePreviewAfterCapture()
+                self.lastError = "Could not start recording."
+            }
         }
     }
 
@@ -75,8 +89,9 @@ final class SettingsDictationTestController: ObservableObject {
         isTranscribing = true
         self.recorder = nil
 
-        Task { @MainActor in
+        Task {
             let buffer = await recorder.stopRecording()
+            audioInputCoordinator.resumePreviewAfterCapture()
             let text = await transcriber.transcribe(audioBuffer: buffer)
             self.transcript = text
             self.lastError = text == nil ? "Ghost Pepper could not transcribe that sample." : nil
@@ -136,20 +151,30 @@ struct RecordingSpeakerFilteringToggleState {
 }
 
 struct SettingsView: View {
-    @ObservedObject var appState: AppState
-    @State private var inputDevices: [AudioInputDevice] = []
-    @State private var selectedDeviceID: AudioDeviceID = 0
+    let appState: AppState
+    private let audioInputCoordinator: AudioInputCoordinator
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var hasScreenRecordingPermission = PermissionChecker.hasScreenRecordingPermission()
     @State private var hasAccessibilityPermission = PermissionChecker.checkAccessibility()
     @State private var hasInputMonitoringPermission = PermissionChecker.checkInputMonitoring()
     @State private var selectedSection: SettingsSection = .recording
-    @StateObject private var dictationTestController: SettingsDictationTestController
+    @State private var dictationTestController: SettingsDictationTestController
 
     init(appState: AppState) {
         self.appState = appState
-        _dictationTestController = StateObject(
-            wrappedValue: SettingsDictationTestController(transcriber: appState.transcriber)
+        self.audioInputCoordinator = appState.audioInputCoordinator
+        _dictationTestController = State(
+            initialValue: SettingsDictationTestController(
+                transcriber: appState.transcriber,
+                audioInputCoordinator: appState.audioInputCoordinator,
+                recorderFactory: {
+                    AudioRecorder(
+                        preferredInputDeviceUIDProvider: { [weak coordinator = appState.audioInputCoordinator] in
+                            coordinator?.selectedDeviceUID
+                        }
+                    )
+                }
+            )
         )
     }
 
@@ -200,7 +225,11 @@ struct SettingsView: View {
         }
         .onAppear {
             refreshPermissions()
-            loadInputDevices()
+            audioInputCoordinator.refreshDevices()
+            audioInputCoordinator.setPreviewActive(true)
+        }
+        .onDisappear {
+            audioInputCoordinator.setPreviewActive(false)
         }
     }
 
@@ -280,21 +309,51 @@ struct SettingsView: View {
             }
 
             SettingsCard("Input") {
-                if inputDevices.isEmpty {
+                if audioInputCoordinator.inputDevices.isEmpty {
                     Text("No audio input devices detected.")
                         .foregroundStyle(.secondary)
                 } else {
-                    Picker("Default microphone", selection: Binding(
-                        get: { selectedDeviceID },
-                        set: { newValue in
-                            selectedDeviceID = newValue
-                            _ = AudioDeviceManager.setDefaultInputDevice(newValue)
-                        }
+                    Picker("Preferred microphone", selection: Binding(
+                        get: { audioInputCoordinator.selectedDeviceUID ?? "" },
+                        set: { audioInputCoordinator.selectDevice(uid: $0) }
                     )) {
-                        ForEach(inputDevices) { device in
-                            Text(device.name).tag(device.id)
+                        ForEach(audioInputCoordinator.inputDevices) { device in
+                            Text(device.name).tag(device.uid)
                         }
                     }
+
+                    Text(audioInputCoordinator.stateDescription)
+                        .font(.caption)
+                        .foregroundStyle(audioInputStatusColor)
+
+                    if audioInputCoordinator.selectedDevice?.isContinuityCandidate == true {
+                        Text("Continuity microphones are supported as app-local inputs. Ghost Pepper now keeps setup responsive and reports whether frames arrive or stay silent.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    HStack(spacing: 4) {
+                        Image(systemName: "mic.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color(nsColor: .controlBackgroundColor))
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(audioInputCoordinator.level > 0.7 ? .red : audioInputCoordinator.level > 0.3 ? .orange : .green)
+                                    .frame(width: geo.size.width * CGFloat(audioInputCoordinator.level))
+                                    .animation(.easeOut(duration: 0.08), value: audioInputCoordinator.level)
+                            }
+                        }
+                        .frame(height: 8)
+
+                        Text("Live level")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(height: 12)
                 }
 
                 Toggle("Play start/stop sounds", isOn: Binding(
@@ -521,6 +580,27 @@ struct SettingsView: View {
             }
 
             SettingsCard("Diagnostics") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Observability Mode")
+                        .font(.body.weight(.medium))
+
+                    Picker("Observability Mode", selection: Binding(
+                        get: { appState.observabilityMode },
+                        set: { appState.observabilityMode = $0 }
+                    )) {
+                        ForEach(ObservabilityMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text("Info keeps always-on operational lifecycle logs. Trace adds finer-grained local diagnostics without logging transcript or OCR content.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Divider()
+
                 Button("Open Debug Log") {
                     appState.showDebugLog()
                 }
@@ -549,9 +629,17 @@ struct SettingsView: View {
         hasInputMonitoringPermission = PermissionChecker.checkInputMonitoring()
     }
 
-    private func loadInputDevices() {
-        inputDevices = AudioDeviceManager.listInputDevices()
-        selectedDeviceID = AudioDeviceManager.defaultInputDeviceID() ?? inputDevices.first?.id ?? 0
+    private var audioInputStatusColor: Color {
+        switch audioInputCoordinator.selectionState {
+        case .ready:
+            return .green
+        case .noFramesReceived, .silentInput:
+            return .orange
+        case .failed, .deviceMissing:
+            return .red
+        case .idle, .connecting, .waitingForFrames:
+            return .secondary
+        }
     }
 }
 

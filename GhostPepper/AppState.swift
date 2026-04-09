@@ -1,5 +1,5 @@
 import SwiftUI
-import Combine
+import Observation
 import ServiceManagement
 
 enum AppStatus: String {
@@ -17,7 +17,8 @@ enum EmptyTranscriptionDisposition: Equatable {
 }
 
 @MainActor
-class AppState: ObservableObject {
+@Observable
+final class AppState {
     enum PipelineOwner {
         case liveRecording
     }
@@ -33,16 +34,16 @@ class AppState: ObservableObject {
         let rawTranscription: String?
     }
 
-    @Published var status: AppStatus = .loading
-    @Published var isRecording: Bool = false
-    @Published var errorMessage: String?
-    @Published var shortcutErrorMessage: String?
-    @Published var cleanupBackend: CleanupBackendOption {
+    var status: AppStatus = .loading
+    var isRecording: Bool = false
+    var errorMessage: String?
+    var shortcutErrorMessage: String?
+    var cleanupBackend: CleanupBackendOption {
         didSet {
             cleanupSettingsDefaults.set(cleanupBackend.rawValue, forKey: Self.cleanupBackendDefaultsKey)
         }
     }
-    @Published var frontmostWindowContextEnabled: Bool {
+    var frontmostWindowContextEnabled: Bool {
         didSet {
             cleanupSettingsDefaults.set(
                 frontmostWindowContextEnabled,
@@ -50,7 +51,7 @@ class AppState: ObservableObject {
             )
         }
     }
-    @Published var playSounds: Bool {
+    var playSounds: Bool {
         didSet {
             cleanupSettingsDefaults.set(
                 playSounds,
@@ -58,12 +59,42 @@ class AppState: ObservableObject {
             )
         }
     }
-    @AppStorage("cleanupEnabled") var cleanupEnabled: Bool = true
-    @AppStorage("cleanupPrompt") var cleanupPrompt: String = TextCleaner.defaultPrompt
-    @AppStorage("speechModel") var speechModel: String = SpeechModelCatalog.defaultModelID
-    @Published private(set) var pushToTalkChord: KeyChord
-    @Published private(set) var toggleToTalkChord: KeyChord
-    @Published var postPasteLearningEnabled: Bool {
+    var observabilityMode: ObservabilityMode {
+        didSet {
+            cleanupSettingsDefaults.set(
+                observabilityMode.rawValue,
+                forKey: ObservabilityConfig.defaultsKey
+            )
+            debugLogStore.refresh()
+            if observabilityMode != oldValue {
+                logSystem.logger(category: .ui) { [weak self] in
+                    self?.currentLogContext ?? .empty
+                }.notice(
+                    "observability.mode_changed",
+                    "Observability mode changed.",
+                    fields: ["mode": observabilityMode.rawValue]
+                )
+            }
+        }
+    }
+    var cleanupEnabled: Bool {
+        didSet {
+            cleanupSettingsDefaults.set(cleanupEnabled, forKey: Self.cleanupEnabledDefaultsKey)
+        }
+    }
+    var cleanupPrompt: String {
+        didSet {
+            cleanupSettingsDefaults.set(cleanupPrompt, forKey: Self.cleanupPromptDefaultsKey)
+        }
+    }
+    var speechModel: String {
+        didSet {
+            cleanupSettingsDefaults.set(speechModel, forKey: Self.speechModelDefaultsKey)
+        }
+    }
+    private(set) var pushToTalkChord: KeyChord
+    private(set) var toggleToTalkChord: KeyChord
+    var postPasteLearningEnabled: Bool {
         didSet {
             cleanupSettingsDefaults.set(
                 postPasteLearningEnabled,
@@ -72,7 +103,7 @@ class AppState: ObservableObject {
             postPasteLearningCoordinator.learningEnabled = postPasteLearningEnabled
         }
     }
-    @Published var ignoreOtherSpeakers: Bool {
+    var ignoreOtherSpeakers: Bool {
         didSet {
             cleanupSettingsDefaults.set(
                 ignoreOtherSpeakers,
@@ -82,9 +113,11 @@ class AppState: ObservableObject {
     }
 
     let modelManager = ModelManager()
+    let audioInputCoordinator: AudioInputCoordinator
     let audioRecorder: AudioRecorder
     let transcriber: SpeechTranscriber
     let textPaster: TextPaster
+    @ObservationIgnored
     lazy var soundEffects = SoundEffects(isEnabled: { [weak self] in
         self?.playSounds ?? true
     })
@@ -98,6 +131,7 @@ class AppState: ObservableObject {
     let chordBindingStore: ChordBindingStore
     let postPasteLearningCoordinator: PostPasteLearningCoordinator
     let debugLogStore: DebugLogStore
+    let logSystem: AppLogSystem
     let appRelauncher: AppRelaunching
     var recordingSessionCoordinatorFactory: (() -> RecordingSessionCoordinator?)?
     var transcribeAudioBufferOverride: (([Float]) -> String?)?
@@ -116,17 +150,33 @@ class AppState: ObservableObject {
         return .showNoSoundDetected
     }
 
-    private var cleanupStateObserver: Any? = nil
+    @ObservationIgnored
     private let recordingOCRPrefetch: RecordingOCRPrefetch
+    @ObservationIgnored
     private var activePerformanceTrace: PerformanceTrace?
+    @ObservationIgnored
     private var activeCleanupAttempted = false
+    @ObservationIgnored
     private var pipelineOwner: PipelineOwner?
+    @ObservationIgnored
+    private let appSessionID = UUID().uuidString
+    @ObservationIgnored
     private let cleanupSettingsDefaults: UserDefaults
+    @ObservationIgnored
     private let inputMonitoringChecker: () -> Bool
+    @ObservationIgnored
     private let inputMonitoringPrompter: () -> Void
+    @ObservationIgnored
     private var hotkeyMonitorStarted = false
+    @ObservationIgnored
+    private var clipboardFallbackDismissTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var loadingOverlayDismissTask: Task<Void, Never>?
 
     private static let cleanupBackendDefaultsKey = "cleanupBackend"
+    private static let cleanupEnabledDefaultsKey = "cleanupEnabled"
+    private static let cleanupPromptDefaultsKey = "cleanupPrompt"
+    private static let speechModelDefaultsKey = "speechModel"
     private static let frontmostWindowContextEnabledDefaultsKey = "frontmostWindowContextEnabled"
     private static let postPasteLearningEnabledDefaultsKey = "postPasteLearningEnabled"
     private static let ignoreOtherSpeakersDefaultsKey = "ignoreOtherSpeakers"
@@ -158,7 +208,8 @@ class AppState: ObservableObject {
         frontmostWindowOCRService: FrontmostWindowOCRService = FrontmostWindowOCRService(),
         cleanupPromptBuilder: CleanupPromptBuilder = CleanupPromptBuilder(),
         correctionStore: CorrectionStore? = nil,
-        audioRecorder: AudioRecorder = AudioRecorder(),
+        audioInputCoordinator: AudioInputCoordinator? = nil,
+        audioRecorder: AudioRecorder? = nil,
         textPaster: TextPaster = TextPaster(),
         debugLogStore: DebugLogStore? = nil,
         appRelauncher: AppRelaunching? = nil,
@@ -170,8 +221,10 @@ class AppState: ObservableObject {
         self.hotkeyMonitor = hotkeyMonitor
         self.chordBindingStore = chordBindingStore
         self.cleanupSettingsDefaults = cleanupSettingsDefaults
-        self.audioRecorder = audioRecorder
         self.textPaster = textPaster
+        self.logSystem = AppLogSystem(
+            configProvider: { ObservabilityConfig.resolve(defaults: cleanupSettingsDefaults) }
+        )
         self.debugLogStore = debugLogStore ?? DebugLogStore()
         self.appRelauncher = appRelauncher ?? AppRelauncher()
         self.inputMonitoringChecker = inputMonitoringChecker
@@ -180,6 +233,13 @@ class AppState: ObservableObject {
         self.toggleToTalkChord = chordBindingStore.binding(for: .toggleToTalk) ?? AppState.defaultToggleToTalkChord
         self.textCleanupManager = textCleanupManager ?? TextCleanupManager(defaults: cleanupSettingsDefaults)
         self.frontmostWindowOCRService = frontmostWindowOCRService
+        let resolvedAudioInputCoordinator = audioInputCoordinator ?? AudioInputCoordinator(defaults: cleanupSettingsDefaults)
+        self.audioInputCoordinator = resolvedAudioInputCoordinator
+        self.audioRecorder = audioRecorder ?? AudioRecorder(
+            preferredInputDeviceUIDProvider: { [weak resolvedAudioInputCoordinator] in
+                resolvedAudioInputCoordinator?.selectedDeviceUID
+            }
+        )
         self.recordingOCRPrefetch = RecordingOCRPrefetch { [frontmostWindowOCRService] customWords in
             await frontmostWindowOCRService.captureContext(customWords: customWords)
         }
@@ -188,6 +248,14 @@ class AppState: ObservableObject {
         let storedCleanupBackend = CleanupBackendOption(
             rawValue: cleanupSettingsDefaults.string(forKey: Self.cleanupBackendDefaultsKey) ?? ""
         ) ?? .localModels
+        let storedCleanupEnabled: Bool
+        if cleanupSettingsDefaults.object(forKey: Self.cleanupEnabledDefaultsKey) == nil {
+            storedCleanupEnabled = true
+        } else {
+            storedCleanupEnabled = cleanupSettingsDefaults.bool(forKey: Self.cleanupEnabledDefaultsKey)
+        }
+        let storedCleanupPrompt = cleanupSettingsDefaults.string(forKey: Self.cleanupPromptDefaultsKey) ?? TextCleaner.defaultPrompt
+        let storedSpeechModel = cleanupSettingsDefaults.string(forKey: Self.speechModelDefaultsKey) ?? SpeechModelCatalog.defaultModelID
         let storedFrontmostWindowContextEnabled = cleanupSettingsDefaults.bool(
             forKey: Self.frontmostWindowContextEnabledDefaultsKey
         )
@@ -207,10 +275,14 @@ class AppState: ObservableObject {
                 forKey: Self.ignoreOtherSpeakersDefaultsKey
             )
         }
+        self.cleanupEnabled = storedCleanupEnabled
+        self.cleanupPrompt = storedCleanupPrompt
+        self.speechModel = storedSpeechModel
         self.cleanupBackend = storedCleanupBackend
         self.frontmostWindowContextEnabled = storedFrontmostWindowContextEnabled
         self.postPasteLearningEnabled = storedPostPasteLearningEnabled
         self.ignoreOtherSpeakers = storedIgnoreOtherSpeakers
+        self.observabilityMode = ObservabilityConfig.resolve(defaults: cleanupSettingsDefaults).mode
         if cleanupSettingsDefaults.object(forKey: Self.playSoundsDefaultsKey) == nil {
             self.playSounds = true
         } else {
@@ -231,13 +303,9 @@ class AppState: ObservableObject {
             }
         )
 
-        // Forward cleanup manager state changes to trigger menu bar icon refresh
-        cleanupStateObserver = self.textCleanupManager.objectWillChange.sink { [weak self] _ in
-            Task { @MainActor in
-                self?.objectWillChange.send()
-            }
-        }
-
+        cleanupSettingsDefaults.set(storedCleanupEnabled, forKey: Self.cleanupEnabledDefaultsKey)
+        cleanupSettingsDefaults.set(storedCleanupPrompt, forKey: Self.cleanupPromptDefaultsKey)
+        cleanupSettingsDefaults.set(storedSpeechModel, forKey: Self.speechModelDefaultsKey)
         cleanupSettingsDefaults.set(storedCleanupBackend.rawValue, forKey: Self.cleanupBackendDefaultsKey)
         cleanupSettingsDefaults.set(
             storedFrontmostWindowContextEnabled,
@@ -262,17 +330,17 @@ class AppState: ObservableObject {
         }
         self.audioRecorder.onRecordingStarted = { [weak self] in
             Task { @MainActor in
-                self?.activePerformanceTrace?.micLiveAt = Date()
+                self?.activePerformanceTrace?.micLiveAt = .now
             }
         }
         self.audioRecorder.onRecordingStopped = { [weak self] in
             Task { @MainActor in
-                self?.activePerformanceTrace?.micColdAt = Date()
+                self?.activePerformanceTrace?.micColdAt = .now
             }
         }
         self.textPaster.onPasteStart = { [weak self] in
             Task { @MainActor in
-                self?.activePerformanceTrace?.pasteStartAt = Date()
+                self?.activePerformanceTrace?.pasteStartAt = .now
             }
         }
         self.textPaster.onPasteEnd = { [weak self] in
@@ -285,20 +353,19 @@ class AppState: ObservableObject {
                 overlay?.show(message: .learnedCorrection(replacement))
             }
         }
-        let activeDebugLogStore = self.debugLogStore
-        let componentDebugLogger: (DebugLogCategory, String) -> Void = { [weak activeDebugLogStore] category, message in
-            Task { @MainActor in
-                activeDebugLogStore?.record(category: category, message: message)
-            }
+        let componentContextProvider: () -> AppLogContext = { [weak self] in
+            self?.currentLogContext ?? .empty
         }
         if let hotkeyMonitor = hotkeyMonitor as? HotkeyMonitor {
-            hotkeyMonitor.debugLogger = componentDebugLogger
+            hotkeyMonitor.logger = self.logSystem.logger(category: .hotkey, contextProvider: componentContextProvider)
         }
-        self.textCleanupManager.debugLogger = componentDebugLogger
-        self.frontmostWindowOCRService.debugLogger = componentDebugLogger
-        self.textCleaner.debugLogger = componentDebugLogger
-        self.postPasteLearningCoordinator.debugLogger = componentDebugLogger
-        self.modelManager.debugLogger = componentDebugLogger
+        self.audioInputCoordinator.logger = self.logSystem.logger(category: .audio, contextProvider: componentContextProvider)
+        self.audioRecorder.logger = self.logSystem.logger(category: .recording, contextProvider: componentContextProvider)
+        self.textCleanupManager.logger = self.logSystem.logger(category: .cleanup, contextProvider: componentContextProvider)
+        self.frontmostWindowOCRService.logger = self.logSystem.logger(category: .ocr, contextProvider: componentContextProvider)
+        self.textCleaner.logger = self.logSystem.logger(category: .cleanup, contextProvider: componentContextProvider)
+        self.postPasteLearningCoordinator.logger = self.logSystem.logger(category: .learning, contextProvider: componentContextProvider)
+        self.modelManager.logger = self.logSystem.logger(category: .model, contextProvider: componentContextProvider)
     }
 
     func initialize(skipPermissionPrompts: Bool = false) async {
@@ -323,16 +390,23 @@ class AppState: ObservableObject {
             }
         }
 
-        // Pre-warm audio engine so first recording starts faster
+        audioInputCoordinator.refreshDevices()
         audioRecorder.prewarm()
         FocusedElementLocator.startPasteTargetTracking()
 
         status = .loading
         let showOverlay = UserDefaults.standard.bool(forKey: "onboardingCompleted")
+        let initializationInterval = appLogger.beginInterval(
+            "app.initialization",
+            "App initialization started.",
+            fields: ["speechModelID": speechModel]
+        )
+        defer {
+            appLogger.endInterval(initializationInterval, "App initialization finished.", fields: ["status": status.rawValue])
+        }
         if showOverlay {
             overlay.show(message: .modelLoading)
         }
-        debugLogStore.record(category: .model, message: "App initialization started.")
         if !modelManager.isReady {
             await loadSpeechModel(name: speechModel)
         }
@@ -354,6 +428,7 @@ class AppState: ObservableObject {
             try appRelauncher.relaunch()
         } catch {
             errorMessage = "Failed to relaunch Ghost Pepper: \(error.localizedDescription)"
+            appLogger.error("app.relaunch_failed", errorMessage ?? "Failed to relaunch Ghost Pepper.", error: error)
         }
     }
 
@@ -368,9 +443,9 @@ class AppState: ObservableObject {
                 let sampleCount = self.audioRecorder.audioBuffer.count
                 if sampleCount < 16000 {
                     self.audioRecorder.resetBuffer()
-                    self.debugLogStore.record(category: .hotkey, message: "Recording restarted (push-to-talk upgraded to toggle, \(sampleCount) samples discarded).")
+                    self.hotkeyLogger.notice("recording.restart_discarded_samples", "Recording restarted after push-to-talk upgraded to toggle.", fields: ["discardedSampleCount": String(sampleCount)])
                 } else {
-                    self.debugLogStore.record(category: .hotkey, message: "Push-to-talk upgraded to toggle, keeping \(sampleCount) samples of existing audio.")
+                    self.hotkeyLogger.notice("recording.restart_kept_samples", "Push-to-talk upgraded to toggle while keeping existing audio.", fields: ["keptSampleCount": String(sampleCount)])
                 }
             }
         }
@@ -383,7 +458,7 @@ class AppState: ObservableObject {
         }
         hotkeyMonitor.onPushToTalkStop = { [weak self] in
             Task { @MainActor in
-                self?.activePerformanceTrace?.hotkeyLiftedAt = Date()
+                self?.activePerformanceTrace?.hotkeyLiftedAt = .now
                 await self?.stopRecordingAndTranscribe()
             }
         }
@@ -395,7 +470,7 @@ class AppState: ObservableObject {
         }
         hotkeyMonitor.onToggleToTalkStop = { [weak self] in
             Task { @MainActor in
-                self?.activePerformanceTrace?.hotkeyLiftedAt = Date()
+                self?.activePerformanceTrace?.hotkeyLiftedAt = .now
                 await self?.stopRecordingAndTranscribe()
             }
         }
@@ -403,7 +478,7 @@ class AppState: ObservableObject {
         hotkeyMonitor.updateBindings(shortcutBindings)
 
         if hotkeyMonitorStarted {
-            debugLogStore.record(category: .hotkey, message: "Hotkey monitor start skipped because it is already active.")
+            hotkeyLogger.info("monitor.start_skipped", "Hotkey monitor start skipped because it is already active.")
             if status != .error {
                 status = .ready
                 errorMessage = nil
@@ -414,19 +489,19 @@ class AppState: ObservableObject {
         if !inputMonitoringChecker() {
             // Try to prompt, but don't block — Accessibility alone may be sufficient
             inputMonitoringPrompter()
-            debugLogStore.record(category: .hotkey, message: "Input Monitoring not granted, attempting to start with Accessibility only.")
+            permissionsLogger.warning("input_monitoring.missing", "Input Monitoring not granted. Attempting to start with Accessibility only.")
         }
 
         if hotkeyMonitor.start() {
             hotkeyMonitorStarted = true
             status = .ready
             errorMessage = nil
-            debugLogStore.record(category: .hotkey, message: "Hotkey monitor is ready.")
+            hotkeyLogger.notice("monitor.ready", "Hotkey monitor is ready.")
         } else {
             PermissionChecker.promptAccessibility()
             errorMessage = "Accessibility access required — grant permission then click Retry"
             status = .error
-            debugLogStore.record(category: .hotkey, message: errorMessage ?? "Accessibility access required.")
+            permissionsLogger.warning("accessibility.required", errorMessage ?? "Accessibility access required.")
         }
     }
 
@@ -469,7 +544,9 @@ class AppState: ObservableObject {
         guard status == .ready else {
             if status == .loading {
                 overlay.show(message: .modelLoading)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                loadingOverlayDismissTask?.cancel()
+                loadingOverlayDismissTask = Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .milliseconds(1500))
                     self?.overlay.dismiss()
                 }
             }
@@ -481,7 +558,7 @@ class AppState: ObservableObject {
         }
 
         guard acquirePipeline(for: .liveRecording) else {
-            debugLogStore.record(category: .hotkey, message: "Recording start skipped because the transcription pipeline is busy.")
+            hotkeyLogger.info("recording.start_skipped_pipeline_busy", "Recording start skipped because the transcription pipeline is busy.")
             activePerformanceTrace = nil
             activeCleanupAttempted = false
             return
@@ -494,18 +571,21 @@ class AppState: ObservableObject {
             } else {
                 recordingOCRPrefetch.cancel()
             }
-            try audioRecorder.startRecording()
-            debugLogStore.record(category: .hotkey, message: "Recording started.")
+            await audioInputCoordinator.pausePreviewForCapture()
+            try await audioRecorder.startRecording()
+            recordingLogger.notice("recording.started", "Recording started.")
             soundEffects.playStart()
             overlay.show(message: .recording)
             isRecording = true
             status = .recording
         } catch {
             recordingOCRPrefetch.cancel()
+            audioInputCoordinator.resumePreviewAfterCapture()
             releasePipeline(owner: .liveRecording)
             activePerformanceTrace = nil
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
             status = .error
+            recordingLogger.error("recording.start_failed", errorMessage ?? "Failed to start recording.", error: error)
         }
     }
 
@@ -516,15 +596,16 @@ class AppState: ObservableObject {
         isTranscribing = true
         defer { isTranscribing = false }
 
-        debugLogStore.record(category: .hotkey, message: "Recording stopped. Starting transcription.")
+        recordingLogger.info("recording.stopped", "Recording stopped. Starting transcription.")
         let buffer = await audioRecorder.stopRecording()
+        audioInputCoordinator.resumePreviewAfterCapture()
         let recordingSessionCoordinator = activeRecordingSessionCoordinator
         clearRecordingSessionCoordinator()
         soundEffects.playStop()
         isRecording = false
         status = .transcribing
         overlay.show(message: .transcribing)
-        activePerformanceTrace?.transcriptionStartAt = Date()
+        activePerformanceTrace?.transcriptionStartAt = .now
 
         let archivedWindowContext: OCRContext?
         if frontmostWindowContextEnabled {
@@ -551,10 +632,10 @@ class AppState: ObservableObject {
             switch Self.emptyTranscriptionDisposition(forAudioSampleCount: buffer.count) {
             case .cancel:
                 overlay.dismiss()
-                debugLogStore.record(category: .model, message: "Empty transcription cancelled after a short recording.")
+                transcriptionLogger.info("transcription.empty_short_recording", "Empty transcription cancelled after a short recording.")
             case .showNoSoundDetected:
                 overlay.show(message: .noSoundDetected)
-                debugLogStore.record(category: .model, message: "No sound detected for a long recording.")
+                transcriptionLogger.warning("transcription.no_sound_detected", "No sound detected for a long recording.")
             }
             completeActivePerformanceTraceIfNeeded()
         }
@@ -588,21 +669,21 @@ class AppState: ObservableObject {
         )
 
         guard let text = transcriptionResult.rawTranscription else {
-            activePerformanceTrace?.transcriptionEndAt = Date()
+            activePerformanceTrace?.transcriptionEndAt = .now
             return false
         }
 
-        activePerformanceTrace?.transcriptionEndAt = Date()
-        var windowContext = archivedWindowContext
+        activePerformanceTrace?.transcriptionEndAt = .now
+        let windowContext = archivedWindowContext
         if cleanupEnabled && canAttemptCleanup {
             activeCleanupAttempted = true
-            activePerformanceTrace?.cleanupStartAt = Date()
+            activePerformanceTrace?.cleanupStartAt = .now
             status = .cleaningUp
             if shouldPaste {
                 overlay.show(message: .cleaningUp)
             }
             if frontmostWindowContextEnabled, windowContext == nil {
-                debugLogStore.record(category: .ocr, message: "No frontmost-window OCR context was captured.")
+                ocrLogger.info("capture.missing_context", "No frontmost-window OCR context was captured.")
             }
         }
 
@@ -610,7 +691,7 @@ class AppState: ObservableObject {
         let finalText = cleanupResult.text
         activeCleanupAttempted = cleanupResult.attemptedCleanup
         if cleanupResult.attemptedCleanup {
-            activePerformanceTrace?.cleanupEndAt = Date()
+            activePerformanceTrace?.cleanupEndAt = .now
         }
 
         if shouldPaste {
@@ -655,24 +736,33 @@ class AppState: ObservableObject {
 
     private func showClipboardFallbackMessage() {
         overlay.show(message: .clipboardFallback)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        clipboardFallbackDismissTask?.cancel()
+        clipboardFallbackDismissTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(2500))
             self?.overlay.dismiss(ifShowing: .clipboardFallback)
         }
     }
 
+    @ObservationIgnored
     private let settingsController = SettingsWindowController()
+    @ObservationIgnored
     private let promptEditorController = PromptEditorController()
+    @ObservationIgnored
     private let debugLogWindowController = DebugLogWindowController()
 
     func showSettings() {
+        uiLogger.info("settings_window.open_requested", "Settings window open requested.")
         settingsController.show(appState: self)
     }
 
     func showPromptEditor() {
+        uiLogger.info("prompt_editor.open_requested", "Prompt editor open requested.")
         promptEditorController.show(appState: self)
     }
 
     func showDebugLog() {
+        uiLogger.info("debug_window.open_requested", "Debug log window open requested.")
+        debugLogStore.refresh()
         debugLogWindowController.show(debugLogStore: debugLogStore)
     }
 
@@ -710,7 +800,7 @@ class AppState: ObservableObject {
 
         let activeCleanupPrompt: String
         if canAttemptCleanup {
-            let promptBuildStart = Date()
+            let promptBuildStart = Date.now
             activeCleanupPrompt = cleanupPromptBuilder.buildPrompt(
                 basePrompt: cleanupPrompt,
                 windowContext: windowContext,
@@ -718,7 +808,7 @@ class AppState: ObservableObject {
                 commonlyMisheard: correctionStore.commonlyMisheard,
                 includeWindowContext: frontmostWindowContextEnabled
             )
-            activePerformanceTrace?.promptBuildDuration = Date().timeIntervalSince(promptBuildStart)
+            activePerformanceTrace?.promptBuildDuration = Date.now.timeIntervalSince(promptBuildStart)
         } else {
             activeCleanupPrompt = cleanupPrompt
         }
@@ -744,7 +834,7 @@ class AppState: ObservableObject {
 
     private func beginPerformanceTrace() {
         var trace = PerformanceTrace(sessionID: UUID().uuidString)
-        trace.hotkeyDetectedAt = Date()
+        trace.hotkeyDetectedAt = .now
         activePerformanceTrace = trace
         activeCleanupAttempted = false
     }
@@ -755,12 +845,13 @@ class AppState: ObservableObject {
         }
 
         if trace.pasteEndAt == nil {
-            trace.pasteEndAt = Date()
+            trace.pasteEndAt = .now
         }
 
-        debugLogStore.record(
-            category: .performance,
-            message: trace.summary(
+        performanceLogger.notice(
+            "dictation.completed",
+            "Dictation pipeline completed.",
+            fields: trace.fields(
                 speechModelID: speechModel,
                 cleanupBackend: cleanupBackend,
                 cleanupAttempted: activeCleanupAttempted
@@ -788,10 +879,20 @@ class AppState: ObservableObject {
             }
 
             hotkeyMonitor.updateBindings(shortcutBindings)
+            hotkeyLogger.notice(
+                "shortcut.updated",
+                "Shortcut updated.",
+                fields: ["action": action.rawValue, "displayString": chord.displayString]
+            )
         } catch {
             pushToTalkChord = previousPushChord
             toggleToTalkChord = previousToggleChord
             shortcutErrorMessage = "That shortcut is already in use."
+            hotkeyLogger.warning(
+                "shortcut.update_rejected",
+                "Shortcut update rejected because the binding is already in use.",
+                fields: ["action": action.rawValue, "displayString": chord.displayString]
+            )
         }
     }
 
@@ -801,6 +902,7 @@ class AppState: ObservableObject {
 
     func setCleanupEnabled(_ enabled: Bool) {
         cleanupEnabled = enabled
+        modelLogger.notice("cleanup.toggle_changed", "Cleanup enabled state changed.", fields: ["enabled": String(enabled)])
         Task {
             await refreshCleanupModelState()
         }
@@ -808,6 +910,7 @@ class AppState: ObservableObject {
 
     func updateCleanupBackend(_ backend: CleanupBackendOption) {
         cleanupBackend = backend
+        modelLogger.notice("cleanup.backend_changed", "Cleanup backend changed.", fields: ["cleanupBackend": backend.rawValue])
         Task {
             await refreshCleanupModelState()
         }
@@ -837,16 +940,19 @@ class AppState: ObservableObject {
 
     private func refreshCleanupModelState() async {
         guard cleanupEnabled else {
-            debugLogStore.record(category: .model, message: "Cleanup disabled; unloading local cleanup models.")
+            modelLogger.info("cleanup.disabled", "Cleanup disabled; unloading local cleanup models.")
             textCleanupManager.unloadModel()
-            objectWillChange.send()
             return
         }
 
         let shouldLoadLocalModels = shouldLoadLocalCleanupModels
-        debugLogStore.record(
-            category: .model,
-            message: "Cleanup backend is \(cleanupBackend.rawValue). shouldLoadLocalModels=\(shouldLoadLocalModels)"
+        modelLogger.info(
+            "cleanup.policy",
+            "Cleanup backend policy evaluated.",
+            fields: [
+                "cleanupBackend": cleanupBackend.rawValue,
+                "shouldLoadLocalModels": String(shouldLoadLocalModels)
+            ]
         )
 
         if shouldLoadLocalModels {
@@ -854,8 +960,56 @@ class AppState: ObservableObject {
         } else {
             textCleanupManager.unloadModel()
         }
+    }
 
-        objectWillChange.send()
+    private var currentLogContext: AppLogContext {
+        AppLogContext(appSessionID: appSessionID)
+            .merged(with: activePerformanceTrace?.logContext ?? .empty)
+    }
+
+    @ObservationIgnored
+    private lazy var appLogger = logSystem.logger(category: .app) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var hotkeyLogger = logSystem.logger(category: .hotkey) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var permissionsLogger = logSystem.logger(category: .permissions) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var recordingLogger = logSystem.logger(category: .recording) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var transcriptionLogger = logSystem.logger(category: .transcription) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var ocrLogger = logSystem.logger(category: .ocr) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var modelLogger = logSystem.logger(category: .model) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var performanceLogger = logSystem.logger(category: .performance) { [weak self] in
+        self?.currentLogContext ?? .empty
+    }
+
+    @ObservationIgnored
+    private lazy var uiLogger = logSystem.logger(category: .ui) { [weak self] in
+        self?.currentLogContext ?? .empty
     }
 
     func loadSpeechModel(name: String) async {

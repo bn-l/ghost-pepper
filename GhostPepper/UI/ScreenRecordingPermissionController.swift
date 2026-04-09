@@ -1,8 +1,9 @@
-import SwiftUI
+import Observation
 
 @MainActor
-final class ScreenRecordingPermissionController: ObservableObject {
-    @Published private(set) var isGranted: Bool
+@Observable
+final class ScreenRecordingPermissionController {
+    private(set) var isGranted: Bool
 
     private let hasPermission: () -> Bool
     private let requestPermission: () -> Void

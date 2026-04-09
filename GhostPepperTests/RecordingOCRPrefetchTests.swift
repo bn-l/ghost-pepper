@@ -15,12 +15,12 @@ final class RecordingOCRPrefetchTests: XCTestCase {
         let spy = OCRPrefetchCaptureSpy()
         let prefetch = RecordingOCRPrefetch { _ in
             await spy.recordCall()
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            try? await Task.sleep(for: .milliseconds(50))
             return OCRContext(windowContents: "captured")
         }
 
         prefetch.start(customWords: ["Ghost Pepper"])
-        try? await Task.sleep(nanoseconds: 10_000_000)
+        try? await Task.sleep(for: .milliseconds(10))
 
         let count = await spy.callCount
         XCTAssertEqual(count, 1)
@@ -28,7 +28,7 @@ final class RecordingOCRPrefetchTests: XCTestCase {
 
     func testResolveReturnsCapturedContextAndElapsedTime() async {
         let prefetch = RecordingOCRPrefetch { _ in
-            try? await Task.sleep(nanoseconds: 20_000_000)
+            try? await Task.sleep(for: .milliseconds(20))
             return OCRContext(windowContents: "captured")
         }
 

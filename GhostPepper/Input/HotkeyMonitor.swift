@@ -19,7 +19,7 @@ protocol HotkeyMonitoring: AnyObject {
 
 /// Monitors configured key chords for hold-to-talk and toggle-to-talk using a CGEvent tap.
 /// Requires Accessibility permission to create the event tap.
-final class HotkeyMonitor: NSObject, HotkeyMonitoring {
+final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
     typealias EventProcessor = (@escaping @Sendable () -> Void) -> Void
 
     private struct HandlingResult {
@@ -36,7 +36,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
         }
     }
 
-    fileprivate struct EventSnapshot {
+    fileprivate struct EventSnapshot: Sendable {
         let type: CGEventType
         let key: PhysicalKey
         let flags: CGEventFlags
@@ -68,7 +68,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
     private var requiresAllKeysReleased = false
     private let stateLock = NSLock()
 
-    var debugLogger: ((DebugLogCategory, String) -> Void)?
+    var logger: AppLogger?
 
     init(
         bindings: [ChordAction: KeyChord] = [:],
@@ -107,7 +107,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
             .sorted { $0.key.rawValue < $1.key.rawValue }
             .map { "\($0.key.rawValue)=\($0.value.displayString)" }
             .joined(separator: ", ")
-        debugLogger?(.hotkey, "Updated bindings: \(bindingsDescription)")
+        logger?.info("bindings.updated", "Updated hotkey bindings.", fields: ["bindings": bindingsDescription])
     }
 
     func setSuspended(_ suspended: Bool) {
@@ -116,7 +116,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
         chordEngine.reset()
         requiresAllKeysReleased = !suspended && !currentPressedKeys().isEmpty
         stateLock.unlock()
-        debugLogger?(.hotkey, "Shortcut capture suspension changed to \(suspended).")
+        logger?.info("capture.suspension_changed", "Shortcut capture suspension changed.", fields: ["suspended": String(suspended)])
     }
 
     // MARK: - Public API
@@ -127,7 +127,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
         stateLock.lock()
         if eventTap != nil {
             stateLock.unlock()
-            debugLogger?(.hotkey, "Hotkey monitor start skipped because the event tap is already active.")
+            logger?.info("monitor.start_skipped", "Hotkey monitor start skipped because the event tap is already active.")
             return true
         }
         stateLock.unlock()
@@ -142,14 +142,14 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
 
         guard request.succeeded else {
             perform(#selector(uninstallEventTapAndStopRunLoop), on: thread, with: nil, waitUntilDone: true)
-            debugLogger?(.hotkey, "Hotkey monitor failed to start because Accessibility permission is unavailable.")
+            logger?.warning("monitor.start_failed", "Hotkey monitor failed to start because Accessibility permission is unavailable.")
             return false
         }
 
         stateLock.lock()
         eventThread = thread
         stateLock.unlock()
-        debugLogger?(.hotkey, "Hotkey monitor event tap started.")
+        logger?.notice("monitor.started", "Hotkey monitor event tap started.")
         return true
     }
 
@@ -169,7 +169,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
         isSuspended = false
         requiresAllKeysReleased = false
         stateLock.unlock()
-        debugLogger?(.hotkey, "Hotkey monitor stopped.")
+        logger?.info("monitor.stopped", "Hotkey monitor stopped.")
     }
 
     // MARK: - Event Handling
@@ -378,7 +378,7 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring {
         }
 
         if let logMessage = result.logMessage {
-            debugLogger?(.hotkey, logMessage)
+            logger?.trace("event.processed", logMessage)
         }
 
         if let startAction = result.startAction {
@@ -566,7 +566,7 @@ private func hotkeyCallback(
         if let tap = monitor.eventTap {
             CGEvent.tapEnable(tap: tap, enable: true)
         }
-        monitor.debugLogger?(.hotkey, "Hotkey event tap was disabled and has been re-enabled.")
+        monitor.logger?.warning("monitor.reenabled", "Hotkey event tap was disabled and has been re-enabled.")
         return Unmanaged.passUnretained(event)
     }
 

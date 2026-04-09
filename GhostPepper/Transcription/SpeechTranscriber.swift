@@ -3,10 +3,8 @@ import Foundation
 /// Transcribes audio buffers using the currently selected speech backend.
 ///
 /// Serializes transcription requests so only one runs at a time.
-final class SpeechTranscriber {
+actor SpeechTranscriber {
     private let modelManager: ModelManager
-    private let serialQueue = DispatchQueue(label: "com.whispercat.transcriber", qos: .userInitiated)
-    private let semaphore = DispatchSemaphore(value: 1)
 
     /// Whether the underlying model is ready for transcription.
     @MainActor
@@ -45,23 +43,6 @@ final class SpeechTranscriber {
     ///   the model is not ready, or transcription produced no output.
     func transcribe(audioBuffer: [Float]) async -> String? {
         guard !audioBuffer.isEmpty else { return nil }
-
-        // Serialize concurrent transcription requests
-        return await withCheckedContinuation { continuation in
-            serialQueue.async { [semaphore] in
-                semaphore.wait()
-                let task = Task {
-                    defer { semaphore.signal() }
-                    return await self.modelManager.transcribe(audioBuffer: audioBuffer)
-                }
-                let result = Task {
-                    await task.value
-                }
-                Task {
-                    let value = await result.value
-                    continuation.resume(returning: value)
-                }
-            }
-        }
+        return await modelManager.transcribe(audioBuffer: audioBuffer)
     }
 }

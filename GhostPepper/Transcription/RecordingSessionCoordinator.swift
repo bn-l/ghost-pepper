@@ -1,6 +1,6 @@
 import Foundation
 
-final class RecordingSessionCoordinator {
+final class RecordingSessionCoordinator: @unchecked Sendable {
     typealias FinalizationResult = (filteredTranscript: String?, summary: DiarizationSummary)
 
     private let appendAudioChunkHandler: ([Float]) -> Void

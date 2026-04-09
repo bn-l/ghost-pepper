@@ -1,94 +1,40 @@
 // GhostPepper/UI/OnboardingWindow.swift
 import SwiftUI
 import AppKit
-import AVFoundation
-import CoreAudio
-
-// MARK: - Mic Level Monitor
-
-@MainActor
-class MicLevelMonitor: ObservableObject {
-    @Published var level: Float = 0
-    private var engine: AVAudioEngine?
-    private var isRunning = false
-
-    func start() {
-        guard !isRunning else { return }
-        // Only start if mic permission is already granted
-        guard PermissionChecker.microphoneStatus() == .authorized else { return }
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { return }
-
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let channelData = buffer.floatChannelData else { return }
-            let frames = Int(buffer.frameLength)
-            var sum: Float = 0
-            for i in 0..<frames {
-                let sample = channelData[0][i]
-                sum += sample * sample
-            }
-            let rms = sqrtf(sum / Float(max(frames, 1)))
-            // Normalize to 0-1 range (RMS of speech is typically 0.01-0.1)
-            let normalized = min(rms * 10, 1.0)
-            Task { @MainActor [weak self] in
-                self?.level = normalized
-            }
-        }
-
-        do {
-            try engine.start()
-            self.engine = engine
-            isRunning = true
-        } catch {
-            // Silently fail — mic level is not critical
-        }
-    }
-
-    func stop() {
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        engine = nil
-        isRunning = false
-        level = 0
-    }
-}
+import Observation
 
 // MARK: - Window Controller
 
-class OnboardingWindowController {
+@MainActor
+final class OnboardingWindowController {
     private var window: NSWindow?
 
-    func show(appState: AppState, onComplete: @escaping () -> Void) {
+    func show(appState: AppState, onComplete: @escaping @MainActor () -> Void) {
         dismiss()
 
         // Show in dock/Cmd+Tab during onboarding
         NSApp.setActivationPolicy(.regular)
 
-        // Delay slightly to let activation policy take effect
-        DispatchQueue.main.async {
-            let onboardingView = OnboardingView(appState: appState, onComplete: { [weak self] in
-                self?.dismiss()
-                onComplete()
-            })
+        let onboardingView = OnboardingView(appState: appState, onComplete: { [weak self] in
+            self?.dismiss()
+            onComplete()
+        })
 
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
-                styleMask: [.titled, .closable],
-                backing: .buffered,
-                defer: false
-            )
-            window.title = "Ghost Pepper"
-            window.contentView = NSHostingView(rootView: onboardingView)
-            window.center()
-            window.level = .normal
-            window.isReleasedWhenClosed = false
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 620),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Ghost Pepper"
+        window.contentView = NSHostingView(rootView: onboardingView)
+        window.center()
+        window.level = .normal
+        window.isReleasedWhenClosed = false
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
 
-            self.window = window
-        }
+        self.window = window
     }
 
     func bringToFront() {
@@ -105,8 +51,8 @@ class OnboardingWindowController {
 // MARK: - Main Onboarding View
 
 struct OnboardingView: View {
-    @ObservedObject var appState: AppState
-    let onComplete: () -> Void
+    let appState: AppState
+    let onComplete: @MainActor () -> Void
     @State private var currentStep = 1
 
     var body: some View {
@@ -187,8 +133,9 @@ struct WelcomeStep: View {
 // MARK: - Step 2: Setup
 
 struct SetupStep: View {
-    @ObservedObject var appState: AppState
-    @ObservedObject var modelManager: ModelManager
+    let appState: AppState
+    let modelManager: ModelManager
+    private let audioInputCoordinator: AudioInputCoordinator
     let onContinue: () -> Void
 
     @State private var micGranted = false
@@ -196,10 +143,14 @@ struct SetupStep: View {
     @State private var accessibilityGranted = false
     @State private var permissionTimer: Timer?
     @State private var modelLoadStarted = false
-    @State private var inputDevices: [AudioInputDevice] = []
-    @State private var selectedDeviceID: AudioDeviceID = 0
-    @StateObject private var micLevel = MicLevelMonitor()
-    @StateObject private var screenRecordingPermission = ScreenRecordingPermissionController()
+    @State private var screenRecordingPermission = ScreenRecordingPermissionController()
+
+    init(appState: AppState, modelManager: ModelManager, onContinue: @escaping () -> Void) {
+        self.appState = appState
+        self.modelManager = modelManager
+        self.onContinue = onContinue
+        self.audioInputCoordinator = appState.audioInputCoordinator
+    }
 
     private var allComplete: Bool {
         micGranted && accessibilityGranted && modelManager.isReady
@@ -216,6 +167,19 @@ struct SetupStep: View {
             selectedCleanupModelKind: appState.textCleanupManager.selectedCleanupModelKind,
             cachedCleanupKinds: appState.textCleanupManager.cachedModelKinds
         )
+    }
+
+    private var audioInputStatusColor: Color {
+        switch audioInputCoordinator.selectionState {
+        case .ready:
+            return .green
+        case .noFramesReceived, .silentInput:
+            return .orange
+        case .failed, .deviceMissing:
+            return .red
+        case .idle, .connecting, .waitingForFrames:
+            return .secondary
+        }
     }
 
     var body: some View {
@@ -251,9 +215,8 @@ struct SetupStep: View {
                                 let granted = await PermissionChecker.checkMicrophone()
                                 micGranted = granted
                                 if granted {
-                                    inputDevices = AudioDeviceManager.listInputDevices()
-                                    selectedDeviceID = AudioDeviceManager.defaultInputDeviceID() ?? 0
-                                    micLevel.start()
+                                    audioInputCoordinator.refreshDevices()
+                                    audioInputCoordinator.setPreviewActive(true)
                                 } else {
                                     micDenied = true
                                 }
@@ -267,18 +230,30 @@ struct SetupStep: View {
 
                 if micGranted {
                     VStack(spacing: 8) {
-                        if inputDevices.count > 1 {
-                            Picker("Input Device", selection: $selectedDeviceID) {
-                                ForEach(inputDevices) { device in
-                                    Text(device.name).tag(device.id)
+                        if audioInputCoordinator.inputDevices.count > 1 {
+                            Picker(
+                                "Input Device",
+                                selection: Binding(
+                                    get: { audioInputCoordinator.selectedDeviceUID ?? "" },
+                                    set: { audioInputCoordinator.selectDevice(uid: $0) }
+                                )
+                            ) {
+                                ForEach(audioInputCoordinator.inputDevices) { device in
+                                    Text(device.name).tag(device.uid)
                                 }
                             }
-                            .onChange(of: selectedDeviceID) { _, newValue in
-                                AudioDeviceManager.setDefaultInputDevice(newValue)
-                                // Restart level monitor for new device
-                                micLevel.stop()
-                                micLevel.start()
-                            }
+                        }
+
+                        Text(audioInputCoordinator.stateDescription)
+                            .font(.caption)
+                            .foregroundStyle(audioInputStatusColor)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if audioInputCoordinator.selectedDevice?.isContinuityCandidate == true {
+                            Text("Continuity microphones can take longer to connect. Ghost Pepper will now keep the UI responsive and warn if frames never arrive.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
                         // Sound level meter
@@ -292,9 +267,9 @@ struct SetupStep: View {
                                     RoundedRectangle(cornerRadius: 3)
                                         .fill(Color(nsColor: .controlBackgroundColor))
                                     RoundedRectangle(cornerRadius: 3)
-                                        .fill(micLevel.level > 0.7 ? .red : micLevel.level > 0.3 ? .orange : .green)
-                                        .frame(width: geo.size.width * CGFloat(micLevel.level))
-                                        .animation(.easeOut(duration: 0.08), value: micLevel.level)
+                                        .fill(audioInputCoordinator.level > 0.7 ? .red : audioInputCoordinator.level > 0.3 ? .orange : .green)
+                                        .frame(width: geo.size.width * CGFloat(audioInputCoordinator.level))
+                                        .animation(.easeOut(duration: 0.08), value: audioInputCoordinator.level)
                                 }
                             }
                             .frame(height: 8)
@@ -333,7 +308,8 @@ struct SetupStep: View {
                         Button("Enable") {
                             // Schedule relaunch in case macOS kills us after granting
                             let appURL = Bundle.main.bundleURL
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .seconds(1))
                                 let task = Process()
                                 task.executableURL = URL(fileURLWithPath: "/bin/sh")
                                 task.arguments = ["-c", "sleep 3 && open \"\(appURL.path)\""]
@@ -424,9 +400,8 @@ struct SetupStep: View {
             accessibilityGranted = PermissionChecker.checkAccessibility()
 
             if micGranted {
-                inputDevices = AudioDeviceManager.listInputDevices()
-                selectedDeviceID = AudioDeviceManager.defaultInputDeviceID() ?? 0
-                micLevel.start()
+                audioInputCoordinator.refreshDevices()
+                audioInputCoordinator.setPreviewActive(true)
             }
 
             if !modelLoadStarted && !modelManager.isReady {
@@ -438,7 +413,7 @@ struct SetupStep: View {
         }
         .onDisappear {
             stopPermissionPolling()
-            micLevel.stop()
+            audioInputCoordinator.setPreviewActive(false)
         }
     }
 
@@ -446,15 +421,17 @@ struct SetupStep: View {
         guard permissionTimer == nil else { return }
 
         permissionTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
-            let accessibilityGrantedNow = PermissionChecker.checkAccessibility()
-            if accessibilityGrantedNow {
-                accessibilityGranted = true
-            }
+            Task { @MainActor in
+                let accessibilityGrantedNow = PermissionChecker.checkAccessibility()
+                if accessibilityGrantedNow {
+                    accessibilityGranted = true
+                }
 
-            screenRecordingPermission.refresh()
+                screenRecordingPermission.refresh()
 
-            if accessibilityGrantedNow && screenRecordingPermission.isGranted {
-                stopPermissionPolling()
+                if accessibilityGrantedNow && screenRecordingPermission.isGranted {
+                    stopPermissionPolling()
+                }
             }
         }
     }
@@ -599,11 +576,12 @@ private struct OnboardingModelRow: View {
 // MARK: - Step 3: Try It
 
 @MainActor
-class TryItController: ObservableObject {
-    @Published var isRecording = false
-    @Published var isTranscribing = false
-    @Published var transcribedText: String?
-    @Published var monitorStartFailed = false
+@Observable
+final class TryItController {
+    var isRecording = false
+    var isTranscribing = false
+    var transcribedText: String?
+    var monitorStartFailed = false
 
     private var hotkeyMonitor: HotkeyMonitoring?
     private var audioRecorder: AudioRecorder?
@@ -612,19 +590,22 @@ class TryItController: ObservableObject {
     private let maxRetries = 5
     private let transcriber: SpeechTranscriber
     private let hotkeyMonitorFactory: ([ChordAction: KeyChord]) -> HotkeyMonitoring
+    private let recorderFactory: () -> AudioRecorder
 
     init(
         transcriber: SpeechTranscriber,
+        recorderFactory: @escaping () -> AudioRecorder = { AudioRecorder() },
         hotkeyMonitorFactory: @escaping ([ChordAction: KeyChord]) -> HotkeyMonitoring = { bindings in
             HotkeyMonitor(bindings: bindings)
         }
     ) {
         self.transcriber = transcriber
+        self.recorderFactory = recorderFactory
         self.hotkeyMonitorFactory = hotkeyMonitorFactory
     }
 
     func start(onAdvance: @escaping () -> Void) {
-        let recorder = AudioRecorder()
+        let recorder = recorderFactory()
         recorder.prewarm()
         self.audioRecorder = recorder
 
@@ -632,14 +613,18 @@ class TryItController: ObservableObject {
             .pushToTalk: AppState.defaultPushToTalkChord
         ])
         monitor.onRecordingStart = { [weak self] in
-            Task { @MainActor in
+            Task {
                 guard let self else { return }
-                self.isRecording = true
-                try? recorder.startRecording()
+                do {
+                    try await recorder.startRecording()
+                    self.isRecording = true
+                } catch {
+                    self.monitorStartFailed = true
+                }
             }
         }
         monitor.onRecordingStop = { [weak self] in
-            Task { @MainActor in
+            Task {
                 guard let self else { return }
                 self.isRecording = false
                 self.isTranscribing = true
@@ -648,7 +633,8 @@ class TryItController: ObservableObject {
                 self.isTranscribing = false
                 if let text {
                     self.transcribedText = text
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                    Task { @MainActor [weak self] in
+                        try? await Task.sleep(for: .seconds(2))
                         self?.advance(onAdvance: onAdvance)
                     }
                 }
@@ -681,7 +667,8 @@ class TryItController: ObservableObject {
             return
         }
         retryCount += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(2))
             if monitor.start() {
                 self?.hotkeyMonitor = monitor
             } else {
@@ -692,14 +679,25 @@ class TryItController: ObservableObject {
 }
 
 struct TryItStep: View {
-    @ObservedObject var appState: AppState
+    let appState: AppState
     let onContinue: () -> Void
-    @StateObject private var controller: TryItController
+    @State private var controller: TryItController
 
     init(appState: AppState, onContinue: @escaping () -> Void) {
         self.appState = appState
         self.onContinue = onContinue
-        self._controller = StateObject(wrappedValue: TryItController(transcriber: appState.transcriber))
+        self._controller = State(
+            initialValue: TryItController(
+                transcriber: appState.transcriber,
+                recorderFactory: {
+                    AudioRecorder(
+                        preferredInputDeviceUIDProvider: { [weak coordinator = appState.audioInputCoordinator] in
+                            coordinator?.selectedDeviceUID
+                        }
+                    )
+                }
+            )
+        )
     }
 
     var body: some View {
@@ -858,7 +856,7 @@ struct DoneStep: View {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text(Date(), format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
+                Text(Date.now, format: .dateTime.weekday(.abbreviated).month(.abbreviated).day().hour().minute())
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 Spacer()

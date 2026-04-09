@@ -176,7 +176,7 @@ final class FocusedElementLocatorTests: XCTestCase {
     func testObservationEligibilityAllowsMissingOriginalFocusedFrame() {
         let session = PasteSession(
             pastedText: "just see approved it",
-            pastedAt: Date(),
+            pastedAt: .now,
             frontmostAppBundleIdentifier: "com.example.app",
             frontmostWindowID: 42,
             frontmostWindowFrame: nil,
@@ -200,7 +200,7 @@ final class FocusedElementLocatorTests: XCTestCase {
     func testObservationEligibilityRejectsDifferentFrontmostApplication() {
         let session = PasteSession(
             pastedText: "just see approved it",
-            pastedAt: Date(),
+            pastedAt: .now,
             frontmostAppBundleIdentifier: "com.example.app",
             frontmostWindowID: 42,
             frontmostWindowFrame: nil,
@@ -224,7 +224,7 @@ final class FocusedElementLocatorTests: XCTestCase {
     func testObservationEligibilityAllowsWindowAndFocusedFrameDriftWithinSameApp() {
         let session = PasteSession(
             pastedText: "just see approved it",
-            pastedAt: Date(),
+            pastedAt: .now,
             frontmostAppBundleIdentifier: "com.example.app",
             frontmostWindowID: 42,
             frontmostWindowFrame: CGRect(x: 10, y: 20, width: 800, height: 600),

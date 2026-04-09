@@ -2,6 +2,65 @@ import XCTest
 import ApplicationServices
 @testable import GhostPepper
 
+private final class ActionQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var actions: [@Sendable () -> Void] = []
+
+    func append(_ action: @escaping @Sendable () -> Void) {
+        lock.withLock {
+            actions.append(action)
+        }
+    }
+
+    func count() -> Int {
+        lock.withLock { actions.count }
+    }
+
+    func popFirst() -> (@Sendable () -> Void)? {
+        lock.withLock {
+            guard !actions.isEmpty else {
+                return nil
+            }
+
+            return actions.removeFirst()
+        }
+    }
+}
+
+private final class CounterBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() {
+        lock.withLock {
+            value += 1
+        }
+    }
+
+    func get() -> Int {
+        lock.withLock { value }
+    }
+}
+
+private final class StringBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: String
+
+    init(_ value: String) {
+        self.value = value
+    }
+
+    func set(_ value: String) {
+        lock.withLock {
+            self.value = value
+        }
+    }
+
+    func get() -> String {
+        lock.withLock { value }
+    }
+}
+
 final class TextPasterTests: XCTestCase {
     func testContainsLikelyPasteTargetAcceptsTerminalStyleFocusedTextArea() {
         let snapshot = TextPaster.AccessibilitySnapshot(
@@ -201,13 +260,13 @@ final class TextPasterTests: XCTestCase {
         pasteboard.clearContents()
         pasteboard.setString("original content", forType: .string)
 
-        var scheduledActions: [() -> Void] = []
-        var postedCommandV = 0
+        let scheduledActions = ActionQueue()
+        let postedCommandV = CounterBox()
         let paster = TextPaster(
             pasteboard: pasteboard,
             canPasteIntoFocusedElement: { true },
             prepareCommandV: {
-                { postedCommandV += 1 }
+                { postedCommandV.increment() }
             },
             schedule: { _, action in
                 scheduledActions.append(action)
@@ -218,17 +277,21 @@ final class TextPasterTests: XCTestCase {
 
         XCTAssertEqual(result, .pasted)
         XCTAssertEqual(pasteboard.string(forType: .string), "new content")
-        XCTAssertEqual(postedCommandV, 0)
-        XCTAssertEqual(scheduledActions.count, 1)
+        XCTAssertEqual(postedCommandV.get(), 0)
+        XCTAssertEqual(scheduledActions.count(), 1)
 
-        let postPasteAction = scheduledActions.removeFirst()
+        guard let postPasteAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
         postPasteAction()
 
-        XCTAssertEqual(postedCommandV, 1)
-        XCTAssertEqual(scheduledActions.count, 1)
+        XCTAssertEqual(postedCommandV.get(), 1)
+        XCTAssertEqual(scheduledActions.count(), 1)
         XCTAssertEqual(pasteboard.string(forType: .string), "new content")
 
-        let restoreClipboardAction = scheduledActions.removeFirst()
+        guard let restoreClipboardAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
         restoreClipboardAction()
 
         XCTAssertEqual(pasteboard.string(forType: .string), "original content")
@@ -241,8 +304,8 @@ final class TextPasterTests: XCTestCase {
         pasteboard.clearContents()
         pasteboard.setString("original content", forType: .string)
 
-        var currentSnapshot = "before paste"
-        var scheduledActions: [() -> Void] = []
+        let currentSnapshot = StringBox("before paste")
+        let scheduledActions = ActionQueue()
         let expectation = expectation(description: "paste session captured")
         let paster = TextPaster(
             pasteboard: pasteboard,
@@ -256,7 +319,7 @@ final class TextPasterTests: XCTestCase {
                 frontmostWindowID: 42,
                 frontmostWindowFrame: nil,
                 focusedElementFrame: nil,
-                focusedElementText: currentSnapshot
+                focusedElementText: currentSnapshot.get()
             )
             },
             schedule: { _, action in
@@ -270,16 +333,20 @@ final class TextPasterTests: XCTestCase {
 
         let result = paster.paste(text: "Jesse")
         XCTAssertEqual(result, .pasted)
-        XCTAssertEqual(scheduledActions.count, 1)
+        XCTAssertEqual(scheduledActions.count(), 1)
 
-        currentSnapshot = "after paste"
+        currentSnapshot.set("after paste")
 
-        let postPasteAction = scheduledActions.removeFirst()
+        guard let postPasteAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
         postPasteAction()
 
-        XCTAssertEqual(scheduledActions.count, 1)
+        XCTAssertEqual(scheduledActions.count(), 1)
 
-        let captureSessionAction = scheduledActions.removeFirst()
+        guard let captureSessionAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
         captureSessionAction()
 
         wait(for: [expectation], timeout: 1)
