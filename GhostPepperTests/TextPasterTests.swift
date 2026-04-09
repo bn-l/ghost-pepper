@@ -256,6 +256,38 @@ final class TextPasterTests: XCTestCase {
         pasteboard.releaseGlobally()
     }
 
+    func testPasteDoesNotReportPasteStartWhenFocusedInputIsUnavailable() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        let pasteStartCount = CounterBox()
+        let pasteEndCount = CounterBox()
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { false },
+            prepareCommandV: {
+                XCTFail("prepareCommandV should not be called when no focused input is available")
+                return nil
+            }
+        )
+        paster.onPasteStart = {
+            pasteStartCount.increment()
+        }
+        paster.onPasteEnd = {
+            pasteEndCount.increment()
+        }
+
+        let result = paster.paste(text: "new content")
+
+        XCTAssertEqual(result, .copiedToClipboard)
+        XCTAssertEqual(pasteStartCount.get(), 0)
+        XCTAssertEqual(pasteEndCount.get(), 1)
+        XCTAssertEqual(pasteboard.string(forType: .string), "new content")
+
+        pasteboard.releaseGlobally()
+    }
+
     func testPasteSchedulesCommandVAndRestoresClipboardWhenFocusedInputIsAvailable() {
         let pasteboard = NSPasteboard.withUniqueName()
         pasteboard.clearContents()
@@ -267,7 +299,10 @@ final class TextPasterTests: XCTestCase {
             pasteboard: pasteboard,
             canPasteIntoFocusedElement: { true },
             prepareCommandV: {
-                { postedCommandV.increment() }
+                {
+                    postedCommandV.increment()
+                    return true
+                }
             },
             schedule: { _, action in
                 scheduledActions.append(action)
@@ -300,6 +335,44 @@ final class TextPasterTests: XCTestCase {
         pasteboard.releaseGlobally()
     }
 
+    func testPasteLeavesTranscriptAvailableWhenCommandVPostingFails() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        let scheduledActions = ActionQueue()
+        let pasteEndCount = CounterBox()
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { true },
+            prepareCommandV: {
+                { false }
+            },
+            schedule: { _, action in
+                scheduledActions.append(action)
+            }
+        )
+        paster.onPasteEnd = {
+            pasteEndCount.increment()
+        }
+
+        let result = paster.paste(text: "new content")
+
+        XCTAssertEqual(result, .pasted)
+        XCTAssertEqual(scheduledActions.count(), 1)
+        XCTAssertEqual(pasteboard.string(forType: .string), "new content")
+
+        guard let postPasteAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
+        postPasteAction()
+
+        XCTAssertEqual(pasteboard.string(forType: .string), "new content")
+        XCTAssertEqual(pasteEndCount.get(), 1)
+
+        pasteboard.releaseGlobally()
+    }
+
     func testPasteCapturesSessionAfterPasteDelay() {
         let pasteboard = NSPasteboard.withUniqueName()
         pasteboard.clearContents()
@@ -311,7 +384,9 @@ final class TextPasterTests: XCTestCase {
         let paster = TextPaster(
             pasteboard: pasteboard,
             canPasteIntoFocusedElement: { true },
-            prepareCommandV: { {} },
+            prepareCommandV: {
+                { true }
+            },
             pasteSessionProvider: { text, date in
             PasteSession(
                 pastedText: text,
@@ -351,6 +426,77 @@ final class TextPasterTests: XCTestCase {
         captureSessionAction()
 
         wait(for: [expectation], timeout: 1)
+        pasteboard.releaseGlobally()
+    }
+
+    func testPasteSkipsPasteSessionCaptureWhenCaptureIsDisabled() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        let scheduledActions = ActionQueue()
+        let capturedPasteCount = CounterBox()
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { true },
+            prepareCommandV: { { true } },
+            pasteSessionProvider: { text, date in
+                PasteSession(
+                    pastedText: text,
+                    pastedAt: date,
+                    frontmostAppBundleIdentifier: "com.example.app",
+                    frontmostWindowID: 42,
+                    frontmostWindowFrame: nil,
+                    focusedElementFrame: nil,
+                    focusedElementText: "after paste"
+                )
+            },
+            schedule: { _, action in
+                scheduledActions.append(action)
+            }
+        )
+        paster.shouldCapturePasteSession = { false }
+        paster.onPaste = { _ in
+            capturedPasteCount.increment()
+        }
+
+        let result = paster.paste(text: "Jesse")
+        XCTAssertEqual(result, .pasted)
+
+        guard let postPasteAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
+        postPasteAction()
+
+        guard let restoreAction = try? XCTUnwrap(scheduledActions.popFirst()) else {
+            return
+        }
+        restoreAction()
+
+        XCTAssertEqual(capturedPasteCount.get(), 0)
+        pasteboard.releaseGlobally()
+    }
+
+    func testDefaultSchedulerRunsPasteCallbacksOnMainActor() {
+        let pasteboard = NSPasteboard.withUniqueName()
+        pasteboard.clearContents()
+        pasteboard.setString("original content", forType: .string)
+
+        let expectation = expectation(description: "paste completed on main actor")
+        let paster = TextPaster(
+            pasteboard: pasteboard,
+            canPasteIntoFocusedElement: { true },
+            prepareCommandV: { { true } }
+        )
+        paster.onPasteEnd = {
+            XCTAssertTrue(Thread.isMainThread)
+            XCTAssertEqual(pasteboard.string(forType: .string), "original content")
+            expectation.fulfill()
+        }
+
+        XCTAssertEqual(paster.paste(text: "new content"), .pasted)
+
+        wait(for: [expectation], timeout: 2)
         pasteboard.releaseGlobally()
     }
 }
