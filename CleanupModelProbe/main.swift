@@ -103,9 +103,9 @@ enum CleanupModelProbeMain {
     }
 }
 
-Task {
-    let exitCode = await CleanupModelProbeMain.run()
-    exit(exitCode)
+@main
+struct CleanupModelProbeEntryPoint {
+    static func main() async {
+        Foundation.exit(await CleanupModelProbeMain.run())
+    }
 }
-
-RunLoop.main.run()
