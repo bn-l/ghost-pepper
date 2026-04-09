@@ -183,13 +183,13 @@ final class AppState {
     nonisolated static let cleanupBackendID = CleanupBackendDefaults.localModelsID
 
     nonisolated static let defaultPushToTalkChord = KeyChord(keys: Set([
-        PhysicalKey(keyCode: 54),  // Right Command
-        PhysicalKey(keyCode: 61)   // Right Option
+        PhysicalKey(keyCode: 55),  // Left Command
+        PhysicalKey(keyCode: 58)   // Left Option
     ]))!
 
     nonisolated static let defaultToggleToTalkChord = KeyChord(keys: Set([
-        PhysicalKey(keyCode: 54),  // Right Command
-        PhysicalKey(keyCode: 61),  // Right Option
+        PhysicalKey(keyCode: 55),  // Left Command
+        PhysicalKey(keyCode: 58),  // Left Option
         PhysicalKey(keyCode: 49)   // Space
     ]))!
 
