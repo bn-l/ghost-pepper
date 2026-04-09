@@ -81,14 +81,39 @@ private final class LoadedLLMBox: @unchecked Sendable {
     }
 }
 
+private enum CleanupModelLoader {
+    static func load(
+        from path: URL,
+        maxTokenCount: Int32,
+        systemPrompt: String
+    ) async -> LoadedLLMBox? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                guard let llm = LLM(from: path, maxTokenCount: maxTokenCount) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+
+                llm.useResolvedTemplate(systemPrompt: systemPrompt)
+                continuation.resume(returning: LoadedLLMBox(llm))
+            }
+        }
+    }
+}
+
 actor CleanupProbeExecutionGate {
+    private static let maxQueuedWaiters = 4
     private var isRunning = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
-    func acquire() async {
+    func acquire() async throws {
         if !isRunning {
             isRunning = true
             return
+        }
+
+        if waiters.count >= Self.maxQueuedWaiters {
+            throw CleanupModelProbeError.queueSaturated
         }
 
         await withCheckedContinuation { continuation in
@@ -104,8 +129,8 @@ actor CleanupProbeExecutionGate {
         }
     }
 
-    func withGate<T: Sendable>(_ operation: @escaping @MainActor () async throws -> T) async rethrows -> T {
-        await acquire()
+    func withGate<T: Sendable>(_ operation: @escaping @MainActor () async throws -> T) async throws -> T {
+        try await acquire()
         defer { release() }
         return try await operation()
     }
@@ -194,17 +219,17 @@ final class TextCleanupManager: TextCleaningManaging {
 
     var isReady: Bool { state == .ready }
     var selectedCleanupModelDisplayName: String {
-        descriptor(for: selectedCleanupModelKind).displayName
+        descriptor(for: selectedCleanupModelKind)?.displayName ?? selectedCleanupModelKind.rawValue
     }
 
     var hasUsableModelForCurrentPolicy: Bool {
         isModelAvailable(selectedCleanupModelKind)
     }
 
-    private static let timeoutSeconds: TimeInterval = 15.0
     private static let selectedCleanupModelDefaultsKey = "selectedCleanupModelKind"
 
     private let defaults: UserDefaults
+    private let probeTimeoutSeconds: TimeInterval
     private let cleanupModelAvailabilityOverrides: [LocalCleanupModelKind: Bool]
     private let probeExecutionOverride: CleanupModelProbeExecutionOverride?
     private let backendShutdownOverride: (() -> Void)?
@@ -214,11 +239,13 @@ final class TextCleanupManager: TextCleaningManaging {
     init(
         defaults: UserDefaults = .standard,
         selectedCleanupModelKind: LocalCleanupModelKind? = nil,
+        probeTimeoutSeconds: TimeInterval = 30.0,
         cleanupModelAvailabilityOverrides: [LocalCleanupModelKind: Bool] = [:],
         probeExecutionOverride: CleanupModelProbeExecutionOverride? = nil,
         backendShutdownOverride: (() -> Void)? = nil
     ) {
         self.defaults = defaults
+        self.probeTimeoutSeconds = probeTimeoutSeconds
         self.cleanupModelAvailabilityOverrides = cleanupModelAvailabilityOverrides
         self.probeExecutionOverride = probeExecutionOverride
         self.backendShutdownOverride = backendShutdownOverride
@@ -286,7 +313,7 @@ final class TextCleanupManager: TextCleaningManaging {
                 logger?.warning(
                     "cleanup.unusable_output",
                     "Discarded local cleanup output because it was unusable.",
-                    fields: ["modelDisplayName": descriptor(for: requestedModelKind).displayName]
+                    fields: ["modelDisplayName": descriptor(for: requestedModelKind)?.displayName ?? requestedModelKind.rawValue]
                 )
                 throw CleanupBackendError.unusableOutput(rawOutput: result.rawOutput)
             }
@@ -296,6 +323,9 @@ final class TextCleanupManager: TextCleaningManaging {
         } catch let error as CleanupModelProbeError {
             switch error {
             case .modelUnavailable:
+                throw CleanupBackendError.unavailable
+            case .queueSaturated, .timedOut, .cancelled:
+                logger?.warning("cleanup.probe_unavailable", "Cleanup probe did not complete successfully.", error: error)
                 throw CleanupBackendError.unavailable
             }
         } catch {
@@ -310,9 +340,11 @@ final class TextCleanupManager: TextCleaningManaging {
         modelKind: LocalCleanupModelKind,
         thinkingMode: CleanupModelProbeThinkingMode
     ) async throws -> CleanupModelProbeRawResult {
-        try await probeExecutionGate.withGate { [self] in
+        try await probeExecutionGate.withGate {
             if let probeExecutionOverride = self.probeExecutionOverride {
-                return try await probeExecutionOverride(text, prompt, modelKind, thinkingMode)
+                return try await self.withTimeout(seconds: self.probeTimeoutSeconds) {
+                    try await probeExecutionOverride(text, prompt, modelKind, thinkingMode)
+                }
             }
 
             guard let llm = self.model(for: modelKind) else {
@@ -329,7 +361,7 @@ final class TextCleanupManager: TextCleaningManaging {
 
             let start = Date.now
             do {
-                let rawOutput = try await self.withTimeout(seconds: Self.timeoutSeconds) {
+                let rawOutput = try await self.withTimeout(seconds: self.probeTimeoutSeconds) {
                     await llm.respond(to: text, thinking: thinkingMode.llmThinkingMode)
                     return llm.output
                 }
@@ -339,12 +371,12 @@ final class TextCleanupManager: TextCleaningManaging {
                     "Local cleanup finished.",
                     fields: [
                         "elapsedMS": String(Int((elapsed * 1000).rounded())),
-                        "modelDisplayName": self.descriptor(for: modelKind).displayName
+                        "modelDisplayName": self.descriptor(for: modelKind)?.displayName ?? modelKind.rawValue
                     ]
                 )
                 return CleanupModelProbeRawResult(
                     modelKind: modelKind,
-                    modelDisplayName: self.descriptor(for: modelKind).displayName,
+                    modelDisplayName: self.descriptor(for: modelKind)?.displayName ?? modelKind.rawValue,
                     rawOutput: rawOutput,
                     elapsed: elapsed
                 )
@@ -426,7 +458,12 @@ final class TextCleanupManager: TextCleaningManaging {
         errorMessage = nil
         try? FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
 
-        let descriptor = descriptor(for: kind)
+        guard let descriptor = descriptor(for: kind) else {
+            errorMessage = "Unknown cleanup model."
+            state = .error
+            logger?.error("model.unknown", "Attempted to load an unknown cleanup model.", fields: ["modelKind": kind.rawValue])
+            return
+        }
         let path = modelPath(for: descriptor.fileName)
         logger?.info("model.load_started", "Loading local cleanup model.", fields: ["modelDisplayName": descriptor.displayName])
 
@@ -445,14 +482,11 @@ final class TextCleanupManager: TextCleaningManaging {
         activeLLM = nil
         activeLoadedModelKind = nil
 
-        let loadedModelBox = await Task.detached(priority: .userInitiated) { () -> LoadedLLMBox? in
-            guard let llm = LLM(from: path, maxTokenCount: descriptor.maxTokenCount) else {
-                return nil
-            }
-
-            llm.useResolvedTemplate(systemPrompt: TextCleaner.defaultPrompt)
-            return LoadedLLMBox(llm)
-        }.value
+        let loadedModelBox = await CleanupModelLoader.load(
+            from: path,
+            maxTokenCount: descriptor.maxTokenCount,
+            systemPrompt: TextCleaner.defaultPrompt
+        )
 
         guard let loadedModel = loadedModelBox?.llm else {
             errorMessage = "Failed to load the selected cleanup model."
@@ -516,15 +550,20 @@ final class TextCleanupManager: TextCleaningManaging {
 
         let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
         let (tempURL, _) = try await session.download(from: url)
-        try FileManager.default.moveItem(at: tempURL, to: destination)
+        do {
+            try FileManager.default.moveItem(at: tempURL, to: destination)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            throw error
+        }
     }
 
     private func model(for modelKind: LocalCleanupModelKind) -> LLM? {
         activeLoadedModelKind == modelKind ? activeLLM : nil
     }
 
-    private func descriptor(for modelKind: LocalCleanupModelKind) -> CleanupModelDescriptor {
-        Self.cleanupModels.first(where: { $0.kind == modelKind })!
+    private func descriptor(for modelKind: LocalCleanupModelKind) -> CleanupModelDescriptor? {
+        Self.cleanupModels.first(where: { $0.kind == modelKind })
     }
 
     private func availabilityOverride(for modelKind: LocalCleanupModelKind) -> Bool? {
@@ -545,19 +584,40 @@ final class TextCleanupManager: TextCleaningManaging {
         }
     }
 
+    private enum TimedResult<T: Sendable>: Sendable {
+        case value(T)
+        case timedOut
+    }
+
     private func withTimeout<T: Sendable>(
         seconds: TimeInterval,
-        operation: @escaping @Sendable () async -> T
+        operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask { await operation() }
-            group.addTask {
-                try await Task.sleep(for: .seconds(seconds))
-                throw CancellationError()
+        do {
+            return try await withThrowingTaskGroup(of: TimedResult<T>.self) { group in
+                group.addTask {
+                    .value(try await operation())
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(seconds))
+                    return .timedOut
+                }
+
+                guard let result = try await group.next() else {
+                    throw CleanupModelProbeError.cancelled
+                }
+
+                group.cancelAll()
+
+                switch result {
+                case .value(let value):
+                    return value
+                case .timedOut:
+                    throw CleanupModelProbeError.timedOut(seconds)
+                }
             }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+        } catch is CancellationError {
+            throw CleanupModelProbeError.cancelled
         }
     }
 
@@ -570,7 +630,11 @@ final class TextCleanupManager: TextCleaningManaging {
             return true
         }
 
-        return FileManager.default.fileExists(atPath: modelPath(for: descriptor(for: modelKind).fileName).path)
+        guard let descriptor = descriptor(for: modelKind) else {
+            return false
+        }
+
+        return FileManager.default.fileExists(atPath: modelPath(for: descriptor.fileName).path)
     }
 }
 

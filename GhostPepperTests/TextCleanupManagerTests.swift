@@ -34,6 +34,28 @@ final class TextCleanupManagerTests: XCTestCase {
         }
     }
 
+    actor BlockingProbe {
+        private var released = false
+        private var continuations: [CheckedContinuation<Void, Never>] = []
+
+        func wait() async {
+            if released {
+                return
+            }
+
+            await withCheckedContinuation { continuation in
+                continuations.append(continuation)
+            }
+        }
+
+        func releaseAll() {
+            released = true
+            let pending = continuations
+            continuations.removeAll()
+            pending.forEach { $0.resume() }
+        }
+    }
+
     func testCleanupModelCatalogIncludesVeryFastFastAndFullQwenModels() {
         XCTAssertEqual(
             TextCleanupManager.cleanupModels.map(\.kind),
@@ -225,6 +247,182 @@ final class TextCleanupManagerTests: XCTestCase {
                 error as? CleanupBackendError,
                 .unusableOutput(rawOutput: "...")
             )
+        }
+    }
+
+    func testProbeTimesOutWhenExecutionNeverFinishes() async {
+        let manager = TextCleanupManager(
+            selectedCleanupModelKind: .qwen35_2b_q4_k_m,
+            probeTimeoutSeconds: 0.01,
+            cleanupModelAvailabilityOverrides: [
+                .qwen35_2b_q4_k_m: true
+            ],
+            probeExecutionOverride: { _, _, _, _ in
+                try? await Task.sleep(for: .milliseconds(100))
+                return CleanupModelProbeRawResult(
+                    modelKind: .qwen35_2b_q4_k_m,
+                    modelDisplayName: TextCleanupManager.recommendedFastModel.displayName,
+                    rawOutput: "late output",
+                    elapsed: 0.1
+                )
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await manager.probe(
+                text: "hello",
+                prompt: "unused",
+                modelKind: .qwen35_2b_q4_k_m,
+                thinkingMode: .suppressed
+            )
+        ) { error in
+            guard case .timedOut(let seconds) = error as? CleanupModelProbeError else {
+                return XCTFail("Expected timedOut, got \(error)")
+            }
+            XCTAssertEqual(seconds, 0.01, accuracy: 0.0001)
+        }
+    }
+
+    func testProbeCancellationDoesNotMasqueradeAsTimeout() async {
+        let manager = TextCleanupManager(
+            selectedCleanupModelKind: .qwen35_2b_q4_k_m,
+            probeTimeoutSeconds: 30,
+            cleanupModelAvailabilityOverrides: [
+                .qwen35_2b_q4_k_m: true
+            ],
+            probeExecutionOverride: { _, _, _, _ in
+                try? await Task.sleep(for: .seconds(5))
+                return CleanupModelProbeRawResult(
+                    modelKind: .qwen35_2b_q4_k_m,
+                    modelDisplayName: TextCleanupManager.recommendedFastModel.displayName,
+                    rawOutput: "late output",
+                    elapsed: 5
+                )
+            }
+        )
+
+        let task = Task {
+            try await manager.probe(
+                text: "hello",
+                prompt: "unused",
+                modelKind: .qwen35_2b_q4_k_m,
+                thinkingMode: .suppressed
+            )
+        }
+
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected probe cancellation.")
+        } catch {
+            guard case .cancelled = error as? CleanupModelProbeError else {
+                return XCTFail("Expected cancelled, got \(error)")
+            }
+        }
+    }
+
+    func testProbeFailureDoesNotWedgeLaterRequests() async throws {
+        let callCount = LockedInt()
+        let manager = TextCleanupManager(
+            selectedCleanupModelKind: .qwen35_2b_q4_k_m,
+            cleanupModelAvailabilityOverrides: [
+                .qwen35_2b_q4_k_m: true
+            ],
+            probeExecutionOverride: { _, _, _, _ in
+                let attempt = callCount.incrementAndGet()
+                if attempt == 1 {
+                    throw NSError(domain: "GhostPepper.Tests", code: 1, userInfo: nil)
+                }
+
+                return CleanupModelProbeRawResult(
+                    modelKind: .qwen35_2b_q4_k_m,
+                    modelDisplayName: TextCleanupManager.recommendedFastModel.displayName,
+                    rawOutput: "second pass",
+                    elapsed: 0.01
+                )
+            }
+        )
+
+        await XCTAssertThrowsErrorAsync(
+            try await manager.probe(
+                text: "first",
+                prompt: "unused",
+                modelKind: .qwen35_2b_q4_k_m,
+                thinkingMode: .suppressed
+            )
+        )
+
+        let result = try await manager.probe(
+            text: "second",
+            prompt: "unused",
+            modelKind: .qwen35_2b_q4_k_m,
+            thinkingMode: .suppressed
+        )
+
+        XCTAssertEqual(result.rawOutput, "second pass")
+    }
+
+    func testProbeQueueSaturationRejectsSixthConcurrentRequest() async throws {
+        let blocker = BlockingProbe()
+        let manager = TextCleanupManager(
+            selectedCleanupModelKind: .qwen35_2b_q4_k_m,
+            cleanupModelAvailabilityOverrides: [
+                .qwen35_2b_q4_k_m: true
+            ],
+            probeExecutionOverride: { _, _, _, _ in
+                await blocker.wait()
+                return CleanupModelProbeRawResult(
+                    modelKind: .qwen35_2b_q4_k_m,
+                    modelDisplayName: TextCleanupManager.recommendedFastModel.displayName,
+                    rawOutput: "ready",
+                    elapsed: 0.01
+                )
+            }
+        )
+
+        let inFlightTasks = (0..<5).map { index in
+            Task {
+                try await manager.probe(
+                    text: "probe-\(index)",
+                    prompt: "unused",
+                    modelKind: .qwen35_2b_q4_k_m,
+                    thinkingMode: .suppressed
+                )
+            }
+        }
+
+        try? await Task.sleep(for: .milliseconds(50))
+
+        await XCTAssertThrowsErrorAsync(
+            try await manager.probe(
+                text: "overflow",
+                prompt: "unused",
+                modelKind: .qwen35_2b_q4_k_m,
+                thinkingMode: .suppressed
+            )
+        ) { error in
+            guard case .queueSaturated = error as? CleanupModelProbeError else {
+                return XCTFail("Expected queueSaturated, got \(error)")
+            }
+        }
+
+        await blocker.releaseAll()
+        for task in inFlightTasks {
+            _ = try await task.value
+        }
+    }
+}
+
+private final class LockedInt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func incrementAndGet() -> Int {
+        lock.withLock {
+            value += 1
+            return value
         }
     }
 }

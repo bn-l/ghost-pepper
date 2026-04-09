@@ -29,11 +29,20 @@ struct CleanupModelProbeTranscript: Equatable, Sendable {
 
 enum CleanupModelProbeError: Error, LocalizedError {
     case modelUnavailable(LocalCleanupModelKind)
+    case queueSaturated
+    case timedOut(TimeInterval)
+    case cancelled
 
     var errorDescription: String? {
         switch self {
         case .modelUnavailable(let modelKind):
             return "Cleanup model \(modelKind) is not loaded."
+        case .queueSaturated:
+            return "Cleanup model probe queue is full."
+        case .timedOut(let seconds):
+            return "Cleanup model probe timed out after \(Int(seconds.rounded())) seconds."
+        case .cancelled:
+            return "Cleanup model probe was cancelled."
         }
     }
 }
