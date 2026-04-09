@@ -17,6 +17,14 @@ protocol HotkeyMonitoring: AnyObject {
     func setSuspended(_ suspended: Bool)
 }
 
+private final class HotkeyCallbackContext {
+    weak var monitor: HotkeyMonitor?
+
+    init(monitor: HotkeyMonitor) {
+        self.monitor = monitor
+    }
+}
+
 /// Monitors configured key chords for hold-to-talk and toggle-to-talk using a CGEvent tap.
 /// Requires Accessibility permission to create the event tap.
 final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
@@ -36,6 +44,16 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
         }
     }
 
+    private struct Callbacks {
+        var onRecordingStart: (() -> Void)?
+        var onRecordingStop: (() -> Void)?
+        var onRecordingRestart: (() -> Void)?
+        var onPushToTalkStart: (() -> Void)?
+        var onPushToTalkStop: (() -> Void)?
+        var onToggleToTalkStart: (() -> Void)?
+        var onToggleToTalkStop: (() -> Void)?
+    }
+
     fileprivate struct EventSnapshot: Sendable {
         let type: CGEventType
         let key: PhysicalKey
@@ -44,13 +62,34 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
 
     // MARK: - Callbacks
 
-    var onRecordingStart: (() -> Void)?
-    var onRecordingStop: (() -> Void)?
-    var onRecordingRestart: (() -> Void)?
-    var onPushToTalkStart: (() -> Void)?
-    var onPushToTalkStop: (() -> Void)?
-    var onToggleToTalkStart: (() -> Void)?
-    var onToggleToTalkStop: (() -> Void)?
+    var onRecordingStart: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onRecordingStart } }
+        set { stateLock.withLock { callbacks.onRecordingStart = newValue } }
+    }
+    var onRecordingStop: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onRecordingStop } }
+        set { stateLock.withLock { callbacks.onRecordingStop = newValue } }
+    }
+    var onRecordingRestart: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onRecordingRestart } }
+        set { stateLock.withLock { callbacks.onRecordingRestart = newValue } }
+    }
+    var onPushToTalkStart: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onPushToTalkStart } }
+        set { stateLock.withLock { callbacks.onPushToTalkStart = newValue } }
+    }
+    var onPushToTalkStop: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onPushToTalkStop } }
+        set { stateLock.withLock { callbacks.onPushToTalkStop = newValue } }
+    }
+    var onToggleToTalkStart: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onToggleToTalkStart } }
+        set { stateLock.withLock { callbacks.onToggleToTalkStart = newValue } }
+    }
+    var onToggleToTalkStop: (() -> Void)? {
+        get { stateLock.withLock { callbacks.onToggleToTalkStop } }
+        set { stateLock.withLock { callbacks.onToggleToTalkStop = newValue } }
+    }
 
     // MARK: - State
 
@@ -67,6 +106,8 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
     private var isSuspended = false
     private var requiresAllKeysReleased = false
     private let stateLock = NSLock()
+    private var callbacks = Callbacks()
+    private var callbackContextPointer: UnsafeMutableRawPointer?
 
     var logger: AppLogger?
 
@@ -91,6 +132,15 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
         self.modifierFlagsProvider = modifierFlagsProvider
         self.eventProcessor = eventProcessor ?? { work in
             queue.async(execute: work)
+        }
+    }
+
+    deinit {
+        stop()
+
+        if let callbackContextPointer {
+            Unmanaged<HotkeyCallbackContext>.fromOpaque(callbackContextPointer).release()
+            self.callbackContextPointer = nil
         }
     }
 
@@ -184,6 +234,13 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
         }
     }
 
+    fileprivate func reenableEventTapIfNeeded() {
+        let tap = stateLock.withLock { eventTap }
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+    }
+
     func handleInput(_ inputEvent: ChordEngine.InputEvent, authoritativePressedKeys: Set<PhysicalKey>? = nil) {
         stateLock.lock()
         let result = handleInputLocked(inputEvent, authoritativePressedKeys: authoritativePressedKeys)
@@ -259,20 +316,10 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
             }
 
             switch inputEvent {
-            case .flagsChanged(let key) where physicalPressedKeys == Set([key]):
+            case .flagsChanged(let key) where physicalPressedKeys.contains(key):
                 requiresAllKeysReleased = false
-                return HandlingResult(
-                    logMessage: "Shortcut capture release recovery completed on a fresh modifier press; matching re-enabled.",
-                    startAction: nil,
-                    stopAction: nil
-                )
-            case .keyDown(let key) where physicalPressedKeys == Set([key]):
+            case .keyDown(let key) where physicalPressedKeys.contains(key):
                 requiresAllKeysReleased = false
-                return HandlingResult(
-                    logMessage: "Shortcut capture release recovery completed on a fresh key press; matching re-enabled.",
-                    startAction: nil,
-                    stopAction: nil
-                )
             default:
                 return nil
             }
@@ -377,6 +424,8 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
             return
         }
 
+        let callbacks = stateLock.withLock { self.callbacks }
+
         if let logMessage = result.logMessage {
             logger?.trace("event.processed", logMessage)
         }
@@ -384,16 +433,16 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
         if let startAction = result.startAction {
             switch startAction {
             case .pushToTalk:
-                if let onPushToTalkStart {
+                if let onPushToTalkStart = callbacks.onPushToTalkStart {
                     onPushToTalkStart()
                 } else {
-                    onRecordingStart?()
+                    callbacks.onRecordingStart?()
                 }
             case .toggleToTalk:
-                if let onToggleToTalkStart {
+                if let onToggleToTalkStart = callbacks.onToggleToTalkStart {
                     onToggleToTalkStart()
                 } else {
-                    onRecordingStart?()
+                    callbacks.onRecordingStart?()
                 }
             }
         }
@@ -402,23 +451,23 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
             // Push-to-talk upgraded to toggle — reset audio buffer to discard overlap
             switch restartAction {
             case .pushToTalk, .toggleToTalk:
-                onRecordingRestart?()
+                callbacks.onRecordingRestart?()
             }
         }
 
         if let stopAction = result.stopAction {
             switch stopAction {
             case .pushToTalk:
-                if let onPushToTalkStop {
+                if let onPushToTalkStop = callbacks.onPushToTalkStop {
                     onPushToTalkStop()
                 } else {
-                    onRecordingStop?()
+                    callbacks.onRecordingStop?()
                 }
             case .toggleToTalk:
-                if let onToggleToTalkStop {
+                if let onToggleToTalkStop = callbacks.onToggleToTalkStop {
                     onToggleToTalkStop()
                 } else {
-                    onRecordingStop?()
+                    callbacks.onRecordingStop?()
                 }
             }
         }
@@ -439,13 +488,21 @@ final class HotkeyMonitor: NSObject, HotkeyMonitoring, @unchecked Sendable {
             | (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
 
+        let callbackContextPointer = callbackContextPointer ?? {
+            let pointer = UnsafeMutableRawPointer(
+                Unmanaged.passRetained(HotkeyCallbackContext(monitor: self)).toOpaque()
+            )
+            self.callbackContextPointer = pointer
+            return pointer
+        }()
+
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .tailAppendEventTap,
             options: .listenOnly,
             eventsOfInterest: eventMask,
             callback: hotkeyCallback,
-            userInfo: Unmanaged.passUnretained(self).toOpaque()
+            userInfo: callbackContextPointer
         ) else {
             request.succeeded = false
             return
@@ -517,39 +574,6 @@ private extension HotkeyMonitor.EventSnapshot {
     }
 }
 
-private extension PhysicalKey {
-    var isModifierKey: Bool {
-        modifierMaskRawValue != nil
-    }
-
-    var modifierMaskRawValue: UInt64? {
-        switch keyCode {
-        case 54:
-            UInt64(NX_DEVICERCMDKEYMASK | NX_COMMANDMASK)
-        case 55:
-            UInt64(NX_DEVICELCMDKEYMASK | NX_COMMANDMASK)
-        case 56:
-            UInt64(NX_DEVICELSHIFTKEYMASK | NX_SHIFTMASK)
-        case 57:
-            CGEventFlags.maskAlphaShift.rawValue
-        case 58:
-            UInt64(NX_DEVICELALTKEYMASK | NX_ALTERNATEMASK)
-        case 59:
-            UInt64(NX_DEVICELCTLKEYMASK | NX_CONTROLMASK)
-        case 60:
-            UInt64(NX_DEVICERSHIFTKEYMASK | NX_SHIFTMASK)
-        case 61:
-            UInt64(NX_DEVICERALTKEYMASK | NX_ALTERNATEMASK)
-        case 62:
-            UInt64(NX_DEVICERCTLKEYMASK | NX_CONTROLMASK)
-        case 63:
-            CGEventFlags.maskSecondaryFn.rawValue
-        default:
-            nil
-        }
-    }
-}
-
 // MARK: - C Callback
 
 private func hotkeyCallback(
@@ -560,17 +584,18 @@ private func hotkeyCallback(
 ) -> Unmanaged<CGEvent>? {
     guard let userInfo else { return Unmanaged.passUnretained(event) }
 
+    let context = Unmanaged<HotkeyCallbackContext>.fromOpaque(userInfo).takeUnretainedValue()
+    guard let monitor = context.monitor else {
+        return Unmanaged.passUnretained(event)
+    }
+
     // Re-enable tap if it was disabled by the system
     if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-        let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
-        if let tap = monitor.eventTap {
-            CGEvent.tapEnable(tap: tap, enable: true)
-        }
+        monitor.reenableEventTapIfNeeded()
         monitor.logger?.warning("monitor.reenabled", "Hotkey event tap was disabled and has been re-enabled.")
         return Unmanaged.passUnretained(event)
     }
 
-    let monitor = Unmanaged<HotkeyMonitor>.fromOpaque(userInfo).takeUnretainedValue()
     monitor.handleEvent(type, event: event)
     return Unmanaged.passUnretained(event)
 }
