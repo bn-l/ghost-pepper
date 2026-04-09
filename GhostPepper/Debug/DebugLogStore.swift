@@ -2,7 +2,7 @@ import Foundation
 import Observation
 import OSLog
 
-protocol AppLogStoreReading {
+protocol AppLogStoreReading: Sendable {
     func entries(since date: Date) throws -> [AppLogRecord]
 }
 
@@ -13,11 +13,11 @@ private enum DebugLogRefreshOutcome {
 
 struct UnifiedAppLogStoreReader: AppLogStoreReading {
     let subsystem: String
-    let storeProvider: () throws -> OSLogStore
+    let storeProvider: @Sendable () throws -> OSLogStore
 
     init(
         subsystem: String = AppLogSystem.defaultSubsystem,
-        storeProvider: @escaping () throws -> OSLogStore = {
+        storeProvider: @escaping @Sendable () throws -> OSLogStore = {
             try OSLogStore(scope: .currentProcessIdentifier)
         }
     ) {
@@ -46,6 +46,7 @@ struct UnifiedAppLogStoreReader: AppLogStoreReading {
 @Observable
 final class DebugLogStore {
     private(set) var entries: [AppLogRecord] = []
+    private(set) var formattedEntriesText = ""
     private(set) var isRefreshing = false
     private(set) var lastRefreshError: String?
 
@@ -69,7 +70,7 @@ final class DebugLogStore {
     }
 
     var formattedText: String {
-        formattedText(for: entries)
+        formattedEntriesText
     }
 
     func refresh() {
@@ -105,13 +106,19 @@ final class DebugLogStore {
                 switch result {
                 case .success(let entries):
                     self.entries = entries
+                    self.formattedEntriesText = self.formattedText(for: entries)
                     self.lastRefreshError = nil
                 case .failure(let errorDescription):
                     self.entries = []
+                    self.formattedEntriesText = ""
                     self.lastRefreshError = errorDescription
                 }
             }
         }
+    }
+
+    func formattedText(for entry: AppLogRecord) -> String {
+        formattedText(for: [entry])
     }
 
     func formattedText(for entries: [AppLogRecord]) -> String {

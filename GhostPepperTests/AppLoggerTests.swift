@@ -71,4 +71,21 @@ final class AppLoggerTests: XCTestCase {
         let decoded = try XCTUnwrap(AppLogRecord.decode(from: record.encodedMessage))
         XCTAssertEqual(decoded, record)
     }
+
+    func testOversizedPayloadsEmitTruncationRecordInsteadOfFullPayload() throws {
+        let oversizedMessage = String(repeating: "x", count: 20_000)
+        let record = AppLogRecord(
+            category: .model,
+            level: .info,
+            event: "model.large_payload",
+            message: oversizedMessage,
+            fields: ["detail": oversizedMessage]
+        )
+
+        let decoded = try XCTUnwrap(AppLogRecord.decode(from: record.encodedMessage))
+
+        XCTAssertEqual(decoded.event, "payload_truncated")
+        XCTAssertEqual(decoded.fields["originalEvent"], "model.large_payload")
+        XCTAssertNotEqual(decoded.message, oversizedMessage)
+    }
 }

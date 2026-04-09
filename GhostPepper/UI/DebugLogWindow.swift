@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 
+@MainActor
 final class DebugLogWindowController: NSObject, NSWindowDelegate {
     private var window: NSPanel?
 
@@ -50,9 +51,9 @@ private struct DebugLogWindowView: View {
     @State private var selectedLevel = LevelFilter.all
     @State private var sessionFilter = ""
     @State private var searchFilter = ""
+    @State private var exportError: String?
 
     private let bottomAnchorID = "debug-log-bottom"
-    private let refreshTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -115,6 +116,12 @@ private struct DebugLogWindowView: View {
                     .foregroundStyle(.red)
             }
 
+            if let exportError {
+                Text("Log export failed: \(exportError)")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
             ScrollViewReader { proxy in
                 GeometryReader { outer in
                     ScrollView {
@@ -126,7 +133,7 @@ private struct DebugLogWindowView: View {
                                     .textSelection(.enabled)
                             } else {
                                 ForEach(visibleEntries) { entry in
-                                    Text(debugLogStore.formattedText(for: [entry]))
+                                    Text(debugLogStore.formattedText(for: entry))
                                         .font(.system(.caption, design: .monospaced))
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .textSelection(.enabled)
@@ -152,8 +159,8 @@ private struct DebugLogWindowView: View {
                         debugLogStore.refresh()
                         scrollToBottom(with: proxy)
                     }
-                    .onReceive(refreshTimer) { _ in
-                        debugLogStore.refresh()
+                    .task {
+                        await refreshLoop()
                     }
                     .onChange(of: visibleEntries.count) { _, _ in
                         guard shouldFollowTail else {
@@ -208,7 +215,22 @@ private struct DebugLogWindowView: View {
             return
         }
 
-        try? text.write(to: url, atomically: true, encoding: .utf8)
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            exportError = nil
+        } catch {
+            exportError = error.localizedDescription
+        }
+    }
+
+    private func refreshLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else {
+                return
+            }
+            debugLogStore.refresh()
+        }
     }
 }
 

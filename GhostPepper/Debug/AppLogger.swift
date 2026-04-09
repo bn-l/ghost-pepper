@@ -194,6 +194,7 @@ struct AppLogErrorMetadata: Codable, Equatable {
 
 struct AppLogRecord: Identifiable, Codable, Equatable {
     static let messagePrefix = "GPLOG "
+    private static let maxEncodedPayloadBytes = 16_384
 
     let id: UUID
     let timestamp: Date
@@ -248,6 +249,29 @@ struct AppLogRecord: Identifiable, Codable, Equatable {
               let text = String(data: data, encoding: .utf8) else {
             return Self.messagePrefix + #"{"event":"encoding_failure","message":"Failed to encode AppLogRecord"}"#
         }
+
+        guard data.count <= Self.maxEncodedPayloadBytes else {
+            let truncatedRecord = AppLogRecord(
+                id: id,
+                timestamp: timestamp,
+                category: category,
+                level: level,
+                event: "payload_truncated",
+                message: "Oversized log payload truncated before emission.",
+                fields: [
+                    "originalEvent": event,
+                    "originalSizeBytes": String(data.count)
+                ],
+                context: context,
+                error: error
+            )
+            guard let truncatedData = try? encoder.encode(truncatedRecord),
+                  let truncatedText = String(data: truncatedData, encoding: .utf8) else {
+                return Self.messagePrefix + #"{"event":"encoding_failure","message":"Failed to encode truncated AppLogRecord"}"#
+            }
+            return Self.messagePrefix + truncatedText
+        }
+
         return Self.messagePrefix + text
     }
 
