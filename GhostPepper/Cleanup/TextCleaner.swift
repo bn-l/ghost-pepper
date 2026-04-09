@@ -31,13 +31,8 @@ struct TextCleanerResult {
 }
 
 final class TextCleaner {
-    private static var thinkBlockExpression: Regex<Substring> {
-        #/(?is)<think\b[^>]*>.*?<\/think>/#
-    }
-
-    private static var leadingThinkTagExpression: Regex<Substring> {
-        #/(?is)^\s*<think\b[^>]*>/#
-    }
+    nonisolated(unsafe) private static let thinkBlockExpression = #/(?is)<think\b[^>]*>.*?<\/think>/#
+    nonisolated(unsafe) private static let leadingThinkTagExpression = #/(?is)^\s*<think\b[^>]*>/#
 
     private let localBackend: CleanupBackend
     private let correctionStore: CorrectionStore

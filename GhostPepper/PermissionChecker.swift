@@ -1,4 +1,4 @@
-import Cocoa
+@preconcurrency import Cocoa
 import AVFoundation
 import CoreGraphics
 import IOKit.hidsystem
@@ -10,6 +10,9 @@ enum MicrophonePermissionStatus: Equatable {
 }
 
 enum PermissionChecker {
+    nonisolated(unsafe) private static let accessibilityPromptOptionKey: CFString =
+        kAXTrustedCheckOptionPrompt.takeUnretainedValue()
+
     struct Client: Sendable {
         let checkAccessibility: @Sendable () -> Bool
         let promptAccessibility: @Sendable () -> Void
@@ -93,11 +96,11 @@ enum PermissionChecker {
 private extension PermissionChecker.Client {
     static let live = PermissionChecker.Client(
         checkAccessibility: {
-            let options = ["AXTrustedCheckOptionPrompt" as CFString: false] as CFDictionary
+            let options = [PermissionChecker.accessibilityPromptOptionKey: false] as CFDictionary
             return AXIsProcessTrustedWithOptions(options)
         },
         promptAccessibility: {
-            let options = ["AXTrustedCheckOptionPrompt" as CFString: true] as CFDictionary
+            let options = [PermissionChecker.accessibilityPromptOptionKey: true] as CFDictionary
             AXIsProcessTrustedWithOptions(options)
         },
         microphoneStatus: {

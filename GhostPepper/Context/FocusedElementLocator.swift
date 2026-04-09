@@ -331,7 +331,7 @@ final class FocusedElementLocator {
         ) == .success,
         let focusedElementValue,
         CFGetTypeID(focusedElementValue) == AXUIElementGetTypeID() {
-            return unsafeBitCast(focusedElementValue, to: AXUIElement.self)
+            return unsafeDowncast(focusedElementValue, to: AXUIElement.self)
         }
 
         guard let focusedWindow = focusedWindow(for: applicationElement) else {
@@ -388,8 +388,8 @@ final class FocusedElementLocator {
             return nil
         }
 
-        let positionAXValue = unsafeBitCast(positionValue, to: AXValue.self)
-        let sizeAXValue = unsafeBitCast(sizeValue, to: AXValue.self)
+        let positionAXValue = unsafeDowncast(positionValue, to: AXValue.self)
+        let sizeAXValue = unsafeDowncast(sizeValue, to: AXValue.self)
 
         var origin = CGPoint.zero
         var size = CGSize.zero
@@ -456,8 +456,8 @@ final class FocusedElementLocator {
 
         let range = AXTextMarkerRangeCreate(
             kCFAllocatorDefault,
-            unsafeBitCast(startMarker, to: AXTextMarker.self),
-            unsafeBitCast(endMarker, to: AXTextMarker.self)
+            unsafeDowncast(startMarker, to: AXTextMarker.self),
+            unsafeDowncast(endMarker, to: AXTextMarker.self)
         )
         var textValue: CFTypeRef?
         guard AXUIElementCopyParameterizedAttributeValue(
@@ -488,7 +488,7 @@ final class FocusedElementLocator {
                 return nil
             }
 
-            return unsafeBitCast(value, to: AXUIElement.self)
+            return unsafeDowncast(value, to: AXUIElement.self)
         }
     }
 
@@ -505,7 +505,7 @@ final class FocusedElementLocator {
             return nil
         }
 
-        return unsafeBitCast(value, to: AXUIElement.self)
+        return unsafeDowncast(value, to: AXUIElement.self)
     }
 
     private func attributeValue(

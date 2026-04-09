@@ -3,6 +3,7 @@ import AppKit
 import Observation
 import ServiceManagement
 
+@MainActor
 final class SettingsWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
 
@@ -538,7 +539,9 @@ struct SettingsView: View {
     }
 
     private var generalSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        @Bindable var appState = appState
+
+        return VStack(alignment: .leading, spacing: 16) {
             SettingsCard("Startup") {
                 Toggle("Launch Ghost Pepper at login", isOn: Binding(
                     get: { launchAtLogin },
@@ -584,10 +587,7 @@ struct SettingsView: View {
                     Text("Observability Mode")
                         .font(.body.weight(.medium))
 
-                    Picker("Observability Mode", selection: Binding(
-                        get: { appState.observabilityMode },
-                        set: { appState.observabilityMode = $0 }
-                    )) {
+                    Picker("Observability Mode", selection: $appState.observabilityMode) {
                         ForEach(ObservabilityMode.allCases) { mode in
                             Text(mode.title).tag(mode)
                         }

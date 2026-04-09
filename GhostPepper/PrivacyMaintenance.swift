@@ -4,7 +4,7 @@ protocol PrivacyMaintaining: Sendable {
     func run(defaults: UserDefaults)
 }
 
-struct PrivacyMaintenance: PrivacyMaintaining, @unchecked Sendable {
+struct PrivacyMaintenance: PrivacyMaintaining {
     private static let cleanupVersionDefaultsKey = "privacyCleanupVersion"
     private static let currentCleanupVersion = 1
     private static let staleDefaultsKeys = [
@@ -15,8 +15,6 @@ struct PrivacyMaintenance: PrivacyMaintaining, @unchecked Sendable {
     ]
 
     private let applicationSupportURL: URL?
-    private let fileManager: FileManager
-
     static let defaultClient: PrivacyMaintenance = {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
             return PrivacyMaintenance(applicationSupportURL: nil)
@@ -30,11 +28,9 @@ struct PrivacyMaintenance: PrivacyMaintaining, @unchecked Sendable {
     }()
 
     init(
-        applicationSupportURL: URL?,
-        fileManager: FileManager = .default
+        applicationSupportURL: URL?
     ) {
         self.applicationSupportURL = applicationSupportURL
-        self.fileManager = fileManager
     }
 
     func run(defaults: UserDefaults) {
@@ -56,10 +52,10 @@ struct PrivacyMaintenance: PrivacyMaintaining, @unchecked Sendable {
     }
 
     private func removeItemIfPresent(at url: URL) {
-        guard fileManager.fileExists(atPath: url.path) else {
+        guard FileManager.default.fileExists(atPath: url.path) else {
             return
         }
 
-        try? fileManager.removeItem(at: url)
+        try? FileManager.default.removeItem(at: url)
     }
 }

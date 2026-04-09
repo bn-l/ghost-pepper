@@ -55,6 +55,8 @@ struct PromptEditorView: View {
     let onClose: @MainActor () -> Void
 
     var body: some View {
+        @Bindable var appState = appState
+
         VStack(alignment: .leading, spacing: 12) {
             Text("Cleanup Prompt")
                 .font(.headline)
@@ -63,10 +65,7 @@ struct PromptEditorView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            TextEditor(text: Binding(
-                get: { appState.cleanupPrompt },
-                set: { appState.cleanupPrompt = $0 }
-            ))
+            TextEditor(text: $appState.cleanupPrompt)
                 .font(.body)
                 .frame(minHeight: 250)
 

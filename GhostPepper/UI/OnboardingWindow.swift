@@ -9,7 +9,7 @@ import Observation
 final class OnboardingWindowController {
     private var window: NSWindow?
 
-    func show(appState: AppState, onComplete: @escaping @MainActor () -> Void) {
+    func show(appState: AppState, onComplete: @escaping @MainActor @Sendable () -> Void) {
         dismiss()
 
         // Show in dock/Cmd+Tab during onboarding
@@ -52,7 +52,7 @@ final class OnboardingWindowController {
 
 struct OnboardingView: View {
     let appState: AppState
-    let onComplete: @MainActor () -> Void
+    let onComplete: @MainActor @Sendable () -> Void
     @State private var currentStep = 1
 
     var body: some View {
@@ -80,7 +80,7 @@ struct OnboardingView: View {
 // MARK: - Step 1: Welcome
 
 struct WelcomeStep: View {
-    let onContinue: () -> Void
+    let onContinue: @MainActor @Sendable () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
@@ -136,7 +136,7 @@ struct SetupStep: View {
     let appState: AppState
     let modelManager: ModelManager
     private let audioInputCoordinator: AudioInputCoordinator
-    let onContinue: () -> Void
+    let onContinue: @MainActor @Sendable () -> Void
 
     @State private var micGranted = false
     @State private var micDenied = false
@@ -145,7 +145,7 @@ struct SetupStep: View {
     @State private var modelLoadStarted = false
     @State private var screenRecordingPermission = ScreenRecordingPermissionController()
 
-    init(appState: AppState, modelManager: ModelManager, onContinue: @escaping () -> Void) {
+    init(appState: AppState, modelManager: ModelManager, onContinue: @escaping @MainActor @Sendable () -> Void) {
         self.appState = appState
         self.modelManager = modelManager
         self.onContinue = onContinue
@@ -604,7 +604,7 @@ final class TryItController {
         self.hotkeyMonitorFactory = hotkeyMonitorFactory
     }
 
-    func start(onAdvance: @escaping () -> Void) {
+    func start(onAdvance: @escaping @MainActor @Sendable () -> Void) {
         let recorder = recorderFactory()
         recorder.prewarm()
         self.audioRecorder = recorder
@@ -613,7 +613,7 @@ final class TryItController {
             .pushToTalk: AppState.defaultPushToTalkChord
         ])
         monitor.onRecordingStart = { [weak self] in
-            Task {
+            Task { @MainActor in
                 guard let self else { return }
                 do {
                     try await recorder.startRecording()
@@ -624,7 +624,7 @@ final class TryItController {
             }
         }
         monitor.onRecordingStop = { [weak self] in
-            Task {
+            Task { @MainActor in
                 guard let self else { return }
                 self.isRecording = false
                 self.isTranscribing = true
@@ -648,7 +648,7 @@ final class TryItController {
         }
     }
 
-    func advance(onAdvance: () -> Void) {
+    func advance(onAdvance: @MainActor @Sendable () -> Void) {
         guard !hasAdvanced else { return }
         hasAdvanced = true
         cleanup()
@@ -680,10 +680,10 @@ final class TryItController {
 
 struct TryItStep: View {
     let appState: AppState
-    let onContinue: () -> Void
+    let onContinue: @MainActor @Sendable () -> Void
     @State private var controller: TryItController
 
-    init(appState: AppState, onContinue: @escaping () -> Void) {
+    init(appState: AppState, onContinue: @escaping @MainActor @Sendable () -> Void) {
         self.appState = appState
         self.onContinue = onContinue
         self._controller = State(
@@ -818,7 +818,7 @@ struct KeyCap: View {
 // MARK: - Step 4: Done
 
 struct DoneStep: View {
-    let onComplete: () -> Void
+    let onComplete: @MainActor @Sendable () -> Void
 
     var body: some View {
         VStack(spacing: 20) {

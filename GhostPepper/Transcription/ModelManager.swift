@@ -6,12 +6,23 @@ import Observation
 /// Manages local speech model lifecycle: download, load, and readiness state.
 @MainActor
 @Observable
-final class ModelManager: @unchecked Sendable {
+final class ModelManager {
+    private final class FluidAudioManagerBox: @unchecked Sendable {
+        let manager: AsrManager
+
+        init(manager: AsrManager) {
+            self.manager = manager
+        }
+    }
+
     typealias ModelLoadOverride = @MainActor (SpeechModelDescriptor) async throws -> Void
     typealias RetryDelayOverride = @MainActor () async -> Void
 
+    @ObservationIgnored
     private(set) var whisperKit: WhisperKit?
-    private var fluidAudioManager: AsrManager?
+    @ObservationIgnored
+    private var fluidAudioManager: FluidAudioManagerBox?
+    @ObservationIgnored
     private var sortformerModels: SortformerModels?
 
     private(set) var state: ModelManagerState = .idle
@@ -128,8 +139,7 @@ final class ModelManager: @unchecked Sendable {
                 return cleaned.isEmpty ? nil : cleaned
             case .fluidAudio:
                 guard let fluidAudioManager else { return nil }
-                let result = try await fluidAudioManager.transcribe(audioBuffer, source: .microphone)
-                let cleaned = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                let cleaned = try await Self.transcribeWithFluidAudioManager(fluidAudioManager, audioBuffer: audioBuffer)
                 return cleaned.isEmpty ? nil : cleaned
             }
         } catch {
@@ -182,14 +192,16 @@ final class ModelManager: @unchecked Sendable {
 
         let needsDownload = !Self.modelIsCached(SpeechModelCatalog.model(named: modelName)!)
         if needsDownload {
-            _ = try await Self.downloadWhisperModelFiles(
-                variant: modelName,
-                downloadBase: modelsDir
-            ) { [weak self] progress in
-                await MainActor.run {
-                    self?.downloadProgress = progress
+            let progressHandler: @Sendable (Progress) -> Void = { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    self?.downloadProgress = progress.fractionCompleted
                 }
             }
+            _ = try await WhisperKit.download(
+                variant: modelName,
+                downloadBase: modelsDir,
+                progressCallback: progressHandler
+            )
             downloadProgress = nil
         }
 
@@ -203,6 +215,15 @@ final class ModelManager: @unchecked Sendable {
             download: true
         )
         whisperKit = try await WhisperKit(config)
+    }
+
+    nonisolated
+    private static func transcribeWithFluidAudioManager(
+        _ managerBox: FluidAudioManagerBox,
+        audioBuffer: [Float]
+    ) async throws -> String {
+        let result = try await managerBox.manager.transcribe(audioBuffer, source: .microphone)
+        return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func loadFluidAudioModel(_ model: SpeechModelDescriptor) async throws {
@@ -220,15 +241,15 @@ final class ModelManager: @unchecked Sendable {
             version = .v3
         }
 
-        let models = try await Self.downloadFluidAudioModels(version: version) { [weak self] progress in
-            await MainActor.run {
-                self?.downloadProgress = progress
+        let models = try await AsrModels.downloadAndLoad(version: version) { [weak self] progress in
+            Task { @MainActor in
+                self?.downloadProgress = progress.fractionCompleted
             }
         }
         downloadProgress = nil
         let manager = AsrManager(config: .default)
         try await manager.initialize(models: models)
-        fluidAudioManager = manager
+        fluidAudioManager = FluidAudioManagerBox(manager: manager)
     }
 
     private func resetLoadedModels() {
@@ -325,36 +346,6 @@ final class ModelManager: @unchecked Sendable {
 
     private static var whisperModelsRootDirectory: URL {
         whisperModelsDirectory.appendingPathComponent("models", isDirectory: true)
-    }
-
-    nonisolated private static func downloadWhisperModelFiles(
-        variant: String,
-        downloadBase: URL,
-        updateProgress: @escaping @Sendable (Double) async -> Void
-    ) async throws -> URL {
-        try await WhisperKit.download(
-            variant: variant,
-            downloadBase: downloadBase,
-            progressCallback: { progress in
-                Task {
-                    await updateProgress(progress.fractionCompleted)
-                }
-            }
-        )
-    }
-
-    nonisolated private static func downloadFluidAudioModels(
-        version: AsrModelVersion,
-        updateProgress: @escaping @Sendable (Double) async -> Void
-    ) async throws -> AsrModels {
-        try await AsrModels.downloadAndLoad(
-            version: version,
-            progressHandler: { progress in
-                Task {
-                    await updateProgress(progress.fractionCompleted)
-                }
-            }
-        )
     }
 }
 

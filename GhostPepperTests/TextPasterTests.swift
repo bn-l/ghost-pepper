@@ -4,9 +4,9 @@ import ApplicationServices
 
 private final class ActionQueue: @unchecked Sendable {
     private let lock = NSLock()
-    private var actions: [@Sendable () -> Void] = []
+    private var actions: [@MainActor @Sendable () -> Void] = []
 
-    func append(_ action: @escaping @Sendable () -> Void) {
+    func append(_ action: @escaping @MainActor @Sendable () -> Void) {
         lock.withLock {
             actions.append(action)
         }
@@ -16,7 +16,7 @@ private final class ActionQueue: @unchecked Sendable {
         lock.withLock { actions.count }
     }
 
-    func popFirst() -> (@Sendable () -> Void)? {
+    func popFirst() -> (@MainActor @Sendable () -> Void)? {
         lock.withLock {
             guard !actions.isEmpty else {
                 return nil
@@ -61,6 +61,7 @@ private final class StringBox: @unchecked Sendable {
     }
 }
 
+@MainActor
 final class TextPasterTests: XCTestCase {
     func testContainsLikelyPasteTargetAcceptsTerminalStyleFocusedTextArea() {
         let snapshot = TextPaster.AccessibilitySnapshot(

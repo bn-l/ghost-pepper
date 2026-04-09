@@ -17,8 +17,8 @@ enum PasteResult: Equatable {
 /// Requires Accessibility permission for CGEvent posting.
 final class TextPaster: @unchecked Sendable {
     typealias PasteSessionProvider = @Sendable (String, Date) -> PasteSession?
-    typealias PasteAction = @Sendable () -> Void
-    typealias PasteScheduler = (TimeInterval, @escaping @Sendable () -> Void) -> Void
+    typealias PasteAction = @MainActor @Sendable () -> Void
+    typealias PasteScheduler = (TimeInterval, @escaping @MainActor @Sendable () -> Void) -> Void
 
     struct AccessibilitySnapshot {
         let role: String?
@@ -86,7 +86,7 @@ final class TextPaster: @unchecked Sendable {
             FocusedElementLocator().capturePasteSession(for: text, at: date)
         },
         schedule: @escaping PasteScheduler = { delay, action in
-            Task {
+            Task { @MainActor in
                 try? await Task.sleep(for: .seconds(delay))
                 action()
             }
@@ -328,7 +328,7 @@ final class TextPaster: @unchecked Sendable {
             return nil
         }
 
-        return unsafeBitCast(value, to: AXUIElement.self)
+        return unsafeDowncast(value, to: AXUIElement.self)
     }
 
     private static func stringAttribute(_ attribute: CFString, on element: AXUIElement) -> String? {
@@ -376,14 +376,18 @@ final class TextPaster: @unchecked Sendable {
                 return nil
             }
 
-            return unsafeBitCast(value, to: AXUIElement.self)
+            return unsafeDowncast(value, to: AXUIElement.self)
         }
     }
 
     // MARK: - Key Simulation
 
     private static func defaultCommandVPasteAction() -> PasteAction? {
-        {
+        guard canCreateCommandVEvents() else {
+            return nil
+        }
+
+        return {
             let source = CGEventSource(stateID: .hidSystemState)
             guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: true),
                   let keyUp = CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: false) else {
@@ -395,5 +399,11 @@ final class TextPaster: @unchecked Sendable {
             keyDown.post(tap: .cghidEventTap)
             keyUp.post(tap: .cghidEventTap)
         }
+    }
+
+    private static func canCreateCommandVEvents() -> Bool {
+        let source = CGEventSource(stateID: .hidSystemState)
+        return CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: true) != nil &&
+            CGEvent(keyboardEventSource: source, virtualKey: Self.vKeyCode, keyDown: false) != nil
     }
 }
