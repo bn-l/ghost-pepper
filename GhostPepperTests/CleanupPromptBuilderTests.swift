@@ -5,16 +5,16 @@ final class CleanupPromptBuilderTests: XCTestCase {
     func testDefaultPromptUsesPersonalPromptShape() {
         let prompt = TextCleaner.defaultPrompt
 
-        XCTAssertTrue(prompt.hasPrefix("Your job is to clean up transcribed audio."))
-        XCTAssertTrue(prompt.contains("Repeat back EVERYTHING the user says."))
-        XCTAssertTrue(prompt.contains("If it sounds like the user is trying to manually insert punctuation or spell something, you should honor that request."))
-        XCTAssertTrue(prompt.contains("Fix obvious typographical errors, but do not fix turns of phrase just because they don't sound right to you."))
-        XCTAssertTrue(prompt.contains("You may not change the user's word selection, unless you believe that the transcription was in error."))
-        XCTAssertTrue(prompt.contains("You must reproduce the entire transcript of what the user said."))
-        XCTAssertTrue(prompt.contains("<EXAMPLES>"))
-        XCTAssertTrue(prompt.contains("</EXAMPLES>"))
+        XCTAssertTrue(prompt.hasPrefix("Clean up a speech transcription for direct use as typed text."))
+        XCTAssertTrue(prompt.contains("Remove filler words such as um, uh, like, you know, basically, literally, sort of, and kind of when they are obvious fillers."))
+        XCTAssertTrue(prompt.contains("Only delete corrected text when the speaker explicitly restarts with phrases like \"scratch that\", \"never mind\", or \"no let me start over\"."))
+        XCTAssertTrue(prompt.contains("Fix obvious transcription mistakes for names, commands, files, models, and jargon when context clearly supports the correction."))
+        XCTAssertTrue(prompt.contains("Do not summarize, answer, add commentary, or omit real content. If unsure, keep it."))
+        XCTAssertTrue(prompt.contains("Examples:"))
+        XCTAssertTrue(prompt.contains("Input:"))
+        XCTAssertTrue(prompt.contains("Output:"))
+        XCTAssertFalse(prompt.contains("<EXAMPLES>"))
         XCTAssertFalse(prompt.contains("<TASK>"))
-        XCTAssertFalse(prompt.contains("<RULE id="))
     }
 
     func testBuilderIncludesWindowContentsWrapperWhenContextEnabled() {
@@ -76,6 +76,33 @@ final class CleanupPromptBuilderTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("abcdefghijkl"))
         XCTAssertFalse(prompt.contains("mnopqrstuvwxyz"))
+    }
+
+    func testBuilderTrimsOCRContextAtWordBoundaryWhenPossible() {
+        let builder = CleanupPromptBuilder(maxWindowContentLength: 14)
+        let prompt = builder.buildPrompt(
+            basePrompt: "Base prompt",
+            windowContext: OCRContext(windowContents: "hello brave new world"),
+            preferredTranscriptions: [],
+            commonlyMisheard: [],
+            includeWindowContext: true
+        )
+
+        XCTAssertTrue(prompt.contains("hello brave"))
+        XCTAssertFalse(prompt.contains("hello brave new"))
+    }
+
+    func testBuilderCapsOverallPromptLengthAfterAddingCorrectionsAndOCR() {
+        let builder = CleanupPromptBuilder(maxWindowContentLength: 200, maxPromptLength: 80)
+        let prompt = builder.buildPrompt(
+            basePrompt: "Base prompt with some extra words to consume the prompt budget.",
+            windowContext: OCRContext(windowContents: "window context with several words that would otherwise overflow the final prompt"),
+            preferredTranscriptions: ["Ghost Pepper", "Jesse"],
+            commonlyMisheard: [MisheardReplacement(wrong: "just see", right: "Jesse")],
+            includeWindowContext: true
+        )
+
+        XCTAssertLessThanOrEqual(prompt.count, 80)
     }
 
     func testBuilderIncludesCorrectionListsWhenAvailable() {

@@ -277,4 +277,17 @@ final class TextCleanerTests: XCTestCase {
         )
         XCTAssertEqual(result.transcript?.rawOutput, "...")
     }
+
+    func testEffectivePromptTruncatesAtWordBoundaryForCompactModel() {
+        let longPrompt = String(repeating: "word ", count: 700).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let effectivePrompt = TextCleaner.effectivePrompt(
+            basePrompt: longPrompt,
+            modelKind: .qwen35_0_8b_q4_k_m
+        )
+
+        XCTAssertLessThan(effectivePrompt.count, longPrompt.count)
+        XCTAssertFalse(effectivePrompt.hasSuffix(" "))
+        XCTAssertFalse(effectivePrompt.hasSuffix("wor"))
+    }
 }

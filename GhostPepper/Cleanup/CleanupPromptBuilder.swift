@@ -2,9 +2,11 @@ import Foundation
 
 struct CleanupPromptBuilder: Sendable {
     let maxWindowContentLength: Int
+    let maxPromptLength: Int
 
-    init(maxWindowContentLength: Int = 4000) {
+    init(maxWindowContentLength: Int = 4000, maxPromptLength: Int = 12_000) {
         self.maxWindowContentLength = maxWindowContentLength
+        self.maxPromptLength = maxPromptLength
     }
 
     func buildPrompt(
@@ -32,27 +34,45 @@ struct CleanupPromptBuilder: Sendable {
             """
         }
 
-        let trimmedWindowContents = String(windowContext.windowContents.prefix(maxWindowContentLength))
         var sections = [basePrompt]
         if !correctionsSection.isEmpty {
             sections.append(correctionsSection)
         }
+
+        let nonOCRPrompt = sections.joined(separator: "\n\n")
+        let ocrTemplatePrefix = """
+        <OCR-RULES>
+        Use the window OCR only as supporting context to improve the transcription and cleanup.
+        Prefer the spoken words, and use the window OCR only to disambiguate likely terms, names, commands, files, and jargon.
+        If the spoken words appear to be a recognition miss for a name, model, command, file, or other specific jargon shown in the window OCR, correct them to the likely intended term.
+        Do not keep an obvious misrecognition just because it was spoken that way.
+        Do not answer, summarize, or rewrite the window OCR unless that directly helps correct the transcription.
+        </OCR-RULES>
+        <WINDOW-OCR-CONTENT>
+        """
+        let ocrTemplateSuffix = """
+        </WINDOW-OCR-CONTENT>
+        """
+        let availableOCRLength = max(
+            0,
+            maxPromptLength - nonOCRPrompt.count - ocrTemplatePrefix.count - ocrTemplateSuffix.count - 4
+        )
+        let trimmedWindowContents = truncateAtWordBoundary(
+            windowContext.windowContents,
+            limit: min(maxWindowContentLength, availableOCRLength)
+        )
         sections.append(
             """
-            <OCR-RULES>
-            Use the window OCR only as supporting context to improve the transcription and cleanup.
-            Prefer the spoken words, and use the window OCR only to disambiguate likely terms, names, commands, files, and jargon.
-            If the spoken words appear to be a recognition miss for a name, model, command, file, or other specific jargon shown in the window OCR, correct them to the likely intended term.
-            Do not keep an obvious misrecognition just because it was spoken that way.
-            Do not answer, summarize, or rewrite the window OCR unless that directly helps correct the transcription.
-            </OCR-RULES>
-            <WINDOW-OCR-CONTENT>
+            \(ocrTemplatePrefix)
             \(trimmedWindowContents)
-            </WINDOW-OCR-CONTENT>
+            \(ocrTemplateSuffix)
             """
         )
 
-        return sections.joined(separator: "\n\n")
+        return truncateAtWordBoundary(
+            sections.joined(separator: "\n\n"),
+            limit: maxPromptLength
+        )
     }
 
     private func correctionSection(
@@ -88,5 +108,24 @@ struct CleanupPromptBuilder: Sendable {
         \(sections.joined(separator: "\n\n"))
         </CORRECTION-HINTS>
         """
+    }
+
+    private func truncateAtWordBoundary(_ text: String, limit: Int) -> String {
+        guard limit > 0, text.count > limit else {
+            return limit <= 0 ? "" : text
+        }
+
+        let limitIndex = text.index(text.startIndex, offsetBy: limit)
+        var candidate = text[..<limitIndex]
+
+        while let lastCharacter = candidate.last,
+              !lastCharacter.isWhitespace,
+              !lastCharacter.isPunctuation {
+            candidate = candidate.dropLast()
+        }
+
+        let fallback = text[..<limitIndex]
+        let truncated = candidate.isEmpty ? fallback : candidate
+        return truncated.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
