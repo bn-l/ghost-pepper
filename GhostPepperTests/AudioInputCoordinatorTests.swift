@@ -183,6 +183,32 @@ final class AudioInputCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.selectedDevice?.isContinuityCandidate == true)
     }
 
+    func testSelectingPreferredDeviceDoesNotChangeSystemDefaultDevice() throws {
+        let defaults = try makeDefaults()
+        let builtIn = makeDevice(uid: "builtin", name: "MacBook Microphone")
+        let iphone = makeDevice(
+            uid: "iphone-mic",
+            name: "Ben's iPhone Microphone",
+            transportType: kAudioDeviceTransportTypeContinuityCaptureWireless
+        )
+        let deviceManager = FakeAudioDeviceManager(
+            devices: [builtIn, iphone],
+            defaultDeviceUID: builtIn.uid
+        )
+        let coordinator = AudioInputCoordinator(
+            defaults: defaults,
+            deviceManager: deviceManager,
+            sessionFactory: { FakeAudioInputSession() },
+            microphonePermissionStatusProvider: { .authorized }
+        )
+
+        coordinator.selectDevice(uid: iphone.uid)
+
+        XCTAssertEqual(coordinator.selectedDeviceUID, iphone.uid)
+        XCTAssertEqual(deviceManager.defaultInputDevice()?.uid, builtIn.uid)
+        XCTAssertEqual(defaults.string(forKey: "preferredInputDeviceUID"), iphone.uid)
+    }
+
     func testPreviewTransitionsFromConnectingToReadyAfterReceivingNonSilentAudio() async throws {
         let defaults = try makeDefaults()
         let iphone = makeDevice(
@@ -219,6 +245,36 @@ final class AudioInputCoordinatorTests: XCTestCase {
         XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "preview.starting" }))
         XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "preview.first_frames" }))
         XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "preview.ready" }))
+    }
+
+    func testContinuityPreviewLogsSlowStartBeforeFirstFramesArrive() async throws {
+        let defaults = try makeDefaults()
+        let iphone = makeDevice(
+            uid: "iphone-mic",
+            name: "Ben's iPhone Microphone",
+            transportType: kAudioDeviceTransportTypeContinuityCaptureWireless
+        )
+        let deviceManager = FakeAudioDeviceManager(devices: [iphone], defaultDeviceUID: iphone.uid)
+        let session = FakeAudioInputSession()
+        session.startDelay = .milliseconds(150)
+        let logging = makeTestLogger(category: .audio)
+        let coordinator = AudioInputCoordinator(
+            defaults: defaults,
+            deviceManager: deviceManager,
+            sessionFactory: { session },
+            microphonePermissionStatusProvider: { .authorized },
+            continuityWarningDuration: .milliseconds(25)
+        )
+        coordinator.logger = logging.logger
+
+        coordinator.setPreviewActive(true)
+
+        await waitUntil(timeoutNanoseconds: 1_000_000_000) {
+            logging.observer.records.contains(where: { $0.event == "preview.continuity_slow_start" })
+        }
+
+        XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "preview.continuity_slow_start" }))
+        XCTAssertFalse(logging.observer.records.contains(where: { $0.event == "preview.first_frames" }))
     }
 
     func testPreviewMarksNoFramesReceivedWhenInputNeverStartsDeliveringAudio() async throws {
@@ -299,6 +355,40 @@ final class AudioInputCoordinatorTests: XCTestCase {
                 $0.event == "selection.became_unavailable" || $0.event == "selection.disappeared"
             })
         )
+    }
+
+    func testCoordinatorFallsBackToRemainingDeviceWhenSelectedMicrophoneDisappears() async throws {
+        let defaults = try makeDefaults()
+        let builtIn = makeDevice(uid: "builtin", name: "MacBook Microphone")
+        let iphone = makeDevice(
+            uid: "iphone-mic",
+            name: "Ben's iPhone Microphone",
+            transportType: kAudioDeviceTransportTypeContinuityCaptureWireless
+        )
+        let deviceManager = FakeAudioDeviceManager(
+            devices: [builtIn, iphone],
+            defaultDeviceUID: builtIn.uid
+        )
+        let logging = makeTestLogger(category: .audio)
+        let coordinator = AudioInputCoordinator(
+            defaults: defaults,
+            deviceManager: deviceManager,
+            sessionFactory: { FakeAudioInputSession() },
+            microphonePermissionStatusProvider: { .authorized }
+        )
+        coordinator.logger = logging.logger
+
+        coordinator.selectDevice(uid: iphone.uid)
+        deviceManager.devices = [builtIn]
+        deviceManager.triggerDeviceListChange()
+
+        await waitUntil {
+            coordinator.selectedDeviceUID == builtIn.uid
+        }
+
+        XCTAssertEqual(coordinator.selectedDeviceUID, builtIn.uid)
+        XCTAssertEqual(coordinator.selectionState, .idle)
+        XCTAssertTrue(logging.observer.records.contains(where: { $0.event == "selection.fallback_after_disappearance" }))
     }
 
     func testContinuityTransportIsTaggedAsContinuityCandidate() {

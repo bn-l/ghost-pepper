@@ -105,15 +105,7 @@ final class AudioInputCoordinator {
         refreshDevices()
     }
 
-    deinit {
-        MainActor.assumeIsolated {
-            deviceListObservation?.invalidate()
-            selectedDeviceStateObservations.forEach { $0.invalidate() }
-            frameTimeoutTask?.cancel()
-            silenceTimeoutTask?.cancel()
-            continuityWarningTask?.cancel()
-        }
-    }
+    deinit {}
 
     func refreshDevices() {
         let previousSelectedDevice = selectedDevice
@@ -199,6 +191,29 @@ final class AudioInputCoordinator {
             Task {
                 await stopPreview(resetState: true)
             }
+        }
+    }
+
+    func shutdown() {
+        deviceListObservation?.invalidate()
+        deviceListObservation = nil
+        selectedDeviceStateObservations.forEach { $0.invalidate() }
+        selectedDeviceStateObservations.removeAll()
+        frameTimeoutTask?.cancel()
+        frameTimeoutTask = nil
+        silenceTimeoutTask?.cancel()
+        silenceTimeoutTask = nil
+        continuityWarningTask?.cancel()
+        continuityWarningTask = nil
+        previewRequested = false
+        previewSuspended = false
+        level = 0
+
+        if let previewSession {
+            Task {
+                await previewSession.stop()
+            }
+            self.previewSession = nil
         }
     }
 
@@ -415,6 +430,7 @@ final class AudioInputCoordinator {
                 log(event: "preview.ready", "Audio preview is ready and receiving non-silent input.")
             }
             silenceTimeoutTask?.cancel()
+            silenceTimeoutTask = nil
             return
         }
 
