@@ -134,11 +134,15 @@ final class RecordingOverlayController {
 
     private func scheduleDismissIfNeeded(for message: OverlayMessage) {
         dismissTask?.cancel()
+        dismissTask = nil
 
         switch message {
         case .clipboardFallback, .learnedCorrection, .noSoundDetected:
             dismissTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(3))
+                guard !Task.isCancelled else {
+                    return
+                }
                 self?.dismiss()
             }
         default:
