@@ -5,7 +5,11 @@ import XCTest
 final class TextCleanupManagerTests: XCTestCase {
     actor ProbeConcurrencyHarness {
         private var isRunning = false
-        private let fastModelDisplayName = "Qwen 3.5 2B Q4_K_M (Fast)"
+        private let fastModelDisplayName: String
+
+        init(fastModelDisplayName: String) {
+            self.fastModelDisplayName = fastModelDisplayName
+        }
 
         func run(text: String) async -> CleanupModelProbeRawResult {
             if isRunning {
@@ -166,7 +170,9 @@ final class TextCleanupManagerTests: XCTestCase {
     }
 
     func testCleanupSerializesOverlappingRequests() async throws {
-        let harness = ProbeConcurrencyHarness()
+        let harness = ProbeConcurrencyHarness(
+            fastModelDisplayName: TextCleanupManager.recommendedFastModel.displayName
+        )
         let manager = TextCleanupManager(
             selectedCleanupModelKind: .qwen35_4b_q4_k_m,
             cleanupModelAvailabilityOverrides: [

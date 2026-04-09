@@ -103,6 +103,12 @@ actor CleanupProbeExecutionGate {
             waiters.removeFirst().resume()
         }
     }
+
+    func withGate<T: Sendable>(_ operation: @escaping @MainActor () async throws -> T) async rethrows -> T {
+        await acquire()
+        defer { release() }
+        return try await operation()
+    }
 }
 
 @MainActor
@@ -304,60 +310,54 @@ final class TextCleanupManager: TextCleaningManaging {
         modelKind: LocalCleanupModelKind,
         thinkingMode: CleanupModelProbeThinkingMode
     ) async throws -> CleanupModelProbeRawResult {
-        let gate = probeExecutionGate
-        await gate.acquire()
-        defer {
-            Task {
-                await gate.release()
+        try await probeExecutionGate.withGate { [self] in
+            if let probeExecutionOverride = self.probeExecutionOverride {
+                return try await probeExecutionOverride(text, prompt, modelKind, thinkingMode)
             }
-        }
 
-        if let probeExecutionOverride {
-            return try await probeExecutionOverride(text, prompt, modelKind, thinkingMode)
-        }
-
-        guard let llm = model(for: modelKind) else {
-            logger?.info(
-                "cleanup.probe_skipped_model_not_ready",
-                "Skipped local cleanup probe because the model was not ready.",
-                fields: ["modelKind": modelKind.rawValue]
-            )
-            throw CleanupModelProbeError.modelUnavailable(modelKind)
-        }
-
-        llm.useResolvedTemplate(systemPrompt: prompt)
-        llm.history = []
-
-        let start = Date.now
-        do {
-            let rawOutput = try await withTimeout(seconds: Self.timeoutSeconds) {
-                await llm.respond(to: text, thinking: thinkingMode.llmThinkingMode)
-                return llm.output
+            guard let llm = self.model(for: modelKind) else {
+                self.logger?.info(
+                    "cleanup.probe_skipped_model_not_ready",
+                    "Skipped local cleanup probe because the model was not ready.",
+                    fields: ["modelKind": modelKind.rawValue]
+                )
+                throw CleanupModelProbeError.modelUnavailable(modelKind)
             }
-            let elapsed = Date.now.timeIntervalSince(start)
-            logger?.notice(
-                "cleanup.probe_finished",
-                "Local cleanup finished.",
-                fields: [
-                    "elapsedMS": String(Int((elapsed * 1000).rounded())),
-                    "modelDisplayName": descriptor(for: modelKind).displayName
-                ]
-            )
-            return CleanupModelProbeRawResult(
-                modelKind: modelKind,
-                modelDisplayName: descriptor(for: modelKind).displayName,
-                rawOutput: rawOutput,
-                elapsed: elapsed
-            )
-        } catch {
-            let elapsed = Date.now.timeIntervalSince(start)
-            logger?.warning(
-                "cleanup.probe_failed_with_timing",
-                "Local cleanup failed.",
-                fields: ["elapsedMS": String(Int((elapsed * 1000).rounded()))],
-                error: error
-            )
-            throw error
+
+            llm.useResolvedTemplate(systemPrompt: prompt)
+            llm.history = []
+
+            let start = Date.now
+            do {
+                let rawOutput = try await self.withTimeout(seconds: Self.timeoutSeconds) {
+                    await llm.respond(to: text, thinking: thinkingMode.llmThinkingMode)
+                    return llm.output
+                }
+                let elapsed = Date.now.timeIntervalSince(start)
+                self.logger?.notice(
+                    "cleanup.probe_finished",
+                    "Local cleanup finished.",
+                    fields: [
+                        "elapsedMS": String(Int((elapsed * 1000).rounded())),
+                        "modelDisplayName": self.descriptor(for: modelKind).displayName
+                    ]
+                )
+                return CleanupModelProbeRawResult(
+                    modelKind: modelKind,
+                    modelDisplayName: self.descriptor(for: modelKind).displayName,
+                    rawOutput: rawOutput,
+                    elapsed: elapsed
+                )
+            } catch {
+                let elapsed = Date.now.timeIntervalSince(start)
+                self.logger?.warning(
+                    "cleanup.probe_failed_with_timing",
+                    "Local cleanup failed.",
+                    fields: ["elapsedMS": String(Int((elapsed * 1000).rounded()))],
+                    error: error
+                )
+                throw error
+            }
         }
     }
 
@@ -445,16 +445,14 @@ final class TextCleanupManager: TextCleaningManaging {
         activeLLM = nil
         activeLoadedModelKind = nil
 
-        let loadedModelBox = await withCheckedContinuation { (continuation: CheckedContinuation<LoadedLLMBox?, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                guard let llm = LLM(from: path, maxTokenCount: descriptor.maxTokenCount) else {
-                    continuation.resume(returning: nil)
-                    return
-                }
-                llm.useResolvedTemplate(systemPrompt: TextCleaner.defaultPrompt)
-                continuation.resume(returning: LoadedLLMBox(llm))
+        let loadedModelBox = await Task.detached(priority: .userInitiated) { () -> LoadedLLMBox? in
+            guard let llm = LLM(from: path, maxTokenCount: descriptor.maxTokenCount) else {
+                return nil
             }
-        }
+
+            llm.useResolvedTemplate(systemPrompt: TextCleaner.defaultPrompt)
+            return LoadedLLMBox(llm)
+        }.value
 
         guard let loadedModel = loadedModelBox?.llm else {
             errorMessage = "Failed to load the selected cleanup model."
