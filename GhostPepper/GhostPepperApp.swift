@@ -1,8 +1,18 @@
 import SwiftUI
 
+@MainActor
+final class GhostPepperLifecycleDelegate: NSObject, NSApplicationDelegate {
+    var onWillTerminate: (() -> Void)?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        onWillTerminate?()
+    }
+}
+
 @main
 struct GhostPepperApp: App {
     private static let automaticTerminationReason = "Ghost Pepper keeps a persistent menu bar presence."
+    @NSApplicationDelegateAdaptor(GhostPepperLifecycleDelegate.self) private var lifecycleDelegate
     @State private var appState = AppState()
     @AppStorage("onboardingCompleted") private var onboardingCompleted = false
     @State private var hasInitialized = false
@@ -41,6 +51,10 @@ struct GhostPepperApp: App {
                 }
             }
             .onAppear {
+                lifecycleDelegate.onWillTerminate = {
+                    ProcessInfo.processInfo.enableAutomaticTermination(Self.automaticTerminationReason)
+                    appState.prepareForTermination()
+                }
                 ProcessInfo.processInfo.disableAutomaticTermination(Self.automaticTerminationReason)
                 guard !hasInitialized else { return }
                 hasInitialized = true
@@ -51,12 +65,6 @@ struct GhostPepperApp: App {
                         onboardingCompleted = true
                         Task { await appState.initialize() }
                     }
-                }
-            }
-            .task {
-                for await _ in NotificationCenter.default.notifications(named: NSApplication.willTerminateNotification) {
-                    ProcessInfo.processInfo.enableAutomaticTermination(Self.automaticTerminationReason)
-                    appState.prepareForTermination()
                 }
             }
         }
