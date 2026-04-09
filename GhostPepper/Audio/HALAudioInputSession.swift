@@ -57,15 +57,55 @@ enum AudioInputSessionError: LocalizedError {
     }
 }
 
+private final class AudioInputRenderBuffer: @unchecked Sendable {
+    let bufferListPointer: UnsafeMutablePointer<AudioBufferList>
+    let bufferData: UnsafeMutableRawPointer
+
+    init(byteCount: Int) {
+        bufferListPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
+        bufferData = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<Float>.alignment
+        )
+        bufferListPointer.initialize(
+            to: AudioBufferList(
+                mNumberBuffers: 1,
+                mBuffers: AudioBuffer(
+                    mNumberChannels: 1,
+                    mDataByteSize: UInt32(byteCount),
+                    mData: bufferData
+                )
+            )
+        )
+    }
+
+    deinit {
+        bufferListPointer.deinitialize(count: 1)
+        bufferListPointer.deallocate()
+        bufferData.deallocate()
+    }
+}
+
+private final class AudioInputCallbackContext {
+    weak var session: HALAudioInputSession?
+
+    init(session: HALAudioInputSession) {
+        self.session = session
+    }
+}
+
 final class HALAudioInputSession: AudioInputCapturing, @unchecked Sendable {
     var onSamples: (@Sendable (AudioInputBufferBatch) -> Void)?
 
     private let operationQueue: DispatchQueue
     private let deliveryQueue: DispatchQueue
+    private let renderLock = NSLock()
     private var audioUnit: AudioUnit?
-    private var bufferListPointer: UnsafeMutablePointer<AudioBufferList>?
-    private var bufferData: UnsafeMutableRawPointer?
+    private var renderBuffer: AudioInputRenderBuffer?
     private var activeFormat: AudioInputStreamFormat?
+    private lazy var callbackContextPointer: UnsafeMutableRawPointer = UnsafeMutableRawPointer(
+        Unmanaged.passRetained(AudioInputCallbackContext(session: self)).toOpaque()
+    )
 
     init(
         operationQueue: DispatchQueue = DispatchQueue(label: "GhostPepper.Audio.HALAudioInputSession"),
@@ -77,6 +117,7 @@ final class HALAudioInputSession: AudioInputCapturing, @unchecked Sendable {
 
     deinit {
         teardown()
+        Unmanaged<AudioInputCallbackContext>.fromOpaque(callbackContextPointer).release()
     }
 
     func start(device: AudioInputDevice) async throws -> AudioInputStreamFormat {
@@ -225,7 +266,7 @@ final class HALAudioInputSession: AudioInputCapturing, @unchecked Sendable {
 
         var callback = AURenderCallbackStruct(
             inputProc: halInputCallback,
-            inputProcRefCon: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+            inputProcRefCon: callbackContextPointer
         )
         status = AudioUnitSetProperty(
             unit,
@@ -256,27 +297,10 @@ final class HALAudioInputSession: AudioInputCapturing, @unchecked Sendable {
         }
 
         let bufferByteCount = Int(maxFramesPerSlice) * MemoryLayout<Float>.size
-        let bufferPointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
-        let rawData = UnsafeMutableRawPointer.allocate(
-            byteCount: bufferByteCount,
-            alignment: MemoryLayout<Float>.alignment
-        )
-        bufferPointer.initialize(
-            to: AudioBufferList(
-                mNumberBuffers: 1,
-                mBuffers: AudioBuffer(
-                    mNumberChannels: 1,
-                    mDataByteSize: UInt32(bufferByteCount),
-                    mData: rawData
-                )
-            )
-        )
+        let renderBuffer = AudioInputRenderBuffer(byteCount: bufferByteCount)
 
         status = AudioUnitInitialize(unit)
         guard status == noErr else {
-            bufferPointer.deinitialize(count: 1)
-            bufferPointer.deallocate()
-            rawData.deallocate()
             AudioComponentInstanceDispose(unit)
             AudioDiagnostics.signposter.endInterval("AUHALStart", interval)
             throw AudioInputSessionError.cannotInitialize(status)
@@ -285,49 +309,40 @@ final class HALAudioInputSession: AudioInputCapturing, @unchecked Sendable {
         status = AudioOutputUnitStart(unit)
         guard status == noErr else {
             AudioUnitUninitialize(unit)
-            bufferPointer.deinitialize(count: 1)
-            bufferPointer.deallocate()
-            rawData.deallocate()
             AudioComponentInstanceDispose(unit)
             AudioDiagnostics.signposter.endInterval("AUHALStart", interval)
             throw AudioInputSessionError.cannotStart(status)
         }
 
-        audioUnit = unit
-        bufferListPointer = bufferPointer
-        bufferData = rawData
-        activeFormat = AudioInputStreamFormat(
+        let activeFormat = AudioInputStreamFormat(
             sampleRate: desiredFormat.mSampleRate,
             channelCount: desiredFormat.mChannelsPerFrame
         )
+        renderLock.withLock {
+            audioUnit = unit
+            self.renderBuffer = renderBuffer
+            self.activeFormat = activeFormat
+        }
 
         AudioDiagnostics.logger.debug(
             "AUHAL ready sampleRate=\(desiredFormat.mSampleRate, privacy: .public) channels=\(desiredFormat.mChannelsPerFrame, privacy: .public)"
         )
         AudioDiagnostics.signposter.endInterval("AUHALStart", interval)
-        return activeFormat ?? AudioInputStreamFormat(sampleRate: desiredFormat.mSampleRate, channelCount: 1)
+        return activeFormat
     }
 
     private func teardown() {
-        if let unit = audioUnit {
-            AudioOutputUnitStop(unit)
-            AudioUnitUninitialize(unit)
-            AudioComponentInstanceDispose(unit)
-            audioUnit = nil
-        }
+        renderLock.withLock {
+            if let unit = audioUnit {
+                AudioOutputUnitStop(unit)
+                AudioUnitUninitialize(unit)
+                AudioComponentInstanceDispose(unit)
+                audioUnit = nil
+            }
 
-        if let bufferListPointer {
-            bufferListPointer.deinitialize(count: 1)
-            bufferListPointer.deallocate()
-            self.bufferListPointer = nil
+            renderBuffer = nil
+            activeFormat = nil
         }
-
-        if let bufferData {
-            bufferData.deallocate()
-            self.bufferData = nil
-        }
-
-        activeFormat = nil
     }
 
     fileprivate func handleInput(
@@ -336,50 +351,79 @@ final class HALAudioInputSession: AudioInputCapturing, @unchecked Sendable {
         inBusNumber: UInt32,
         inNumberFrames: UInt32
     ) -> OSStatus {
-        guard let audioUnit, let bufferListPointer, let activeFormat else {
-            return noErr
+        let (renderStatus, batch): (OSStatus, AudioInputBufferBatch?) = renderLock.withLock {
+            guard let audioUnit,
+                  let renderBuffer,
+                  let activeFormat else {
+                return (noErr, nil)
+            }
+
+            let bufferListPointer = renderBuffer.bufferListPointer
+            bufferListPointer.pointee.mBuffers.mDataByteSize = inNumberFrames * UInt32(MemoryLayout<Float>.size)
+
+            let renderStatus = AudioUnitRender(
+                audioUnit,
+                ioActionFlags,
+                inTimeStamp,
+                inBusNumber,
+                inNumberFrames,
+                bufferListPointer
+            )
+            guard renderStatus == noErr,
+                  let data = bufferListPointer.pointee.mBuffers.mData else {
+                return (renderStatus, nil)
+            }
+
+            let frameCount = Int(inNumberFrames)
+            let samplePointer = data.assumingMemoryBound(to: Float.self)
+            let samples = Array(UnsafeBufferPointer(start: samplePointer, count: frameCount))
+
+            var sum: Float = 0
+            for sample in samples {
+                sum += sample * sample
+            }
+            let rms = sqrtf(sum / Float(max(frameCount, 1)))
+
+            return (
+                renderStatus,
+                AudioInputBufferBatch(
+                    samples: samples,
+                    sampleRate: activeFormat.sampleRate,
+                    channelCount: activeFormat.channelCount,
+                    rms: rms
+                )
+            )
         }
 
-        bufferListPointer.pointee.mBuffers.mDataByteSize = inNumberFrames * UInt32(MemoryLayout<Float>.size)
-
-        let renderStatus = AudioUnitRender(
-            audioUnit,
-            ioActionFlags,
-            inTimeStamp,
-            inBusNumber,
-            inNumberFrames,
-            bufferListPointer
-        )
-        guard renderStatus == noErr,
-              let data = bufferListPointer.pointee.mBuffers.mData else {
+        guard let batch else {
             return renderStatus
         }
 
-        let frameCount = Int(inNumberFrames)
-        let samplePointer = data.assumingMemoryBound(to: Float.self)
-        let samples = Array(UnsafeBufferPointer(start: samplePointer, count: frameCount))
-
-        var sum: Float = 0
-        for sample in samples {
-            sum += sample * sample
-        }
-        let rms = sqrtf(sum / Float(max(frameCount, 1)))
-
-        let batch = AudioInputBufferBatch(
-            samples: samples,
-            sampleRate: activeFormat.sampleRate,
-            channelCount: activeFormat.channelCount,
-            rms: rms
-        )
         deliveryQueue.async { [onSamples] in
             onSamples?(batch)
         }
-        return noErr
+        return renderStatus
     }
+
+    #if DEBUG
+    func invokeInputCallbackForTesting(frameCount: UInt32 = 1) -> OSStatus {
+        var flags = AudioUnitRenderActionFlags()
+        var timeStamp = AudioTimeStamp()
+        return handleInput(
+            ioActionFlags: &flags,
+            inTimeStamp: &timeStamp,
+            inBusNumber: 1,
+            inNumberFrames: frameCount
+        )
+    }
+    #endif
 }
 
 private let halInputCallback: AURenderCallback = { refCon, ioActionFlags, inTimeStamp, inBusNumber, inNumberFrames, _ in
-    let session = Unmanaged<HALAudioInputSession>.fromOpaque(refCon).takeUnretainedValue()
+    let context = Unmanaged<AudioInputCallbackContext>.fromOpaque(refCon).takeUnretainedValue()
+    guard let session = context.session else {
+        return noErr
+    }
     return session.handleInput(
         ioActionFlags: ioActionFlags,
         inTimeStamp: inTimeStamp,
