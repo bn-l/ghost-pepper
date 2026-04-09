@@ -3,14 +3,22 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
+private final class PasteTargetMonitorCallbackContext {
+    weak var monitor: FocusedElementLocator.PasteTargetMonitor?
+
+    init(monitor: FocusedElementLocator.PasteTargetMonitor) {
+        self.monitor = monitor
+    }
+}
+
 struct FrontmostWindowReference: Equatable, Sendable {
     let windowID: UInt32
     let frame: CGRect
 }
 
 final class FocusedElementLocator {
-    struct PasteTargetObservation: Equatable {
-        enum Status: Equatable {
+    struct PasteTargetObservation: Equatable, Sendable {
+        enum Status: Equatable, Sendable {
             case editable
             case nonEditable
         }
@@ -26,6 +34,7 @@ final class FocusedElementLocator {
         private var observedProcessID: pid_t?
         private var observation: PasteTargetObservation?
         private var isStarted = false
+        private var callbackContextPointer: UnsafeMutableRawPointer?
 
         func start() {
             guard !isStarted else {
@@ -114,7 +123,13 @@ final class FocusedElementLocator {
                 return
             }
 
-            let context = UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
+            let context = callbackContextPointer ?? {
+                let pointer = UnsafeMutableRawPointer(
+                    Unmanaged.passRetained(PasteTargetMonitorCallbackContext(monitor: self)).toOpaque()
+                )
+                callbackContextPointer = pointer
+                return pointer
+            }()
             let notifications = [
                 kAXFocusedUIElementChangedNotification as CFString,
                 kAXFocusedWindowChangedNotification as CFString
@@ -584,8 +599,11 @@ private func focusedElementObserverCallback(
         return
     }
 
-    let monitor = Unmanaged<FocusedElementLocator.PasteTargetMonitor>
+    let context = Unmanaged<PasteTargetMonitorCallbackContext>
         .fromOpaque(refcon)
         .takeUnretainedValue()
+    guard let monitor = context.monitor else {
+        return
+    }
     monitor.handle(notification: notification, element: element)
 }

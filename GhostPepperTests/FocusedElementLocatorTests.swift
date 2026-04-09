@@ -221,7 +221,7 @@ final class FocusedElementLocatorTests: XCTestCase {
         XCTAssertFalse(isEligible)
     }
 
-    func testObservationEligibilityAllowsWindowAndFocusedFrameDriftWithinSameApp() {
+    func testObservationEligibilityRejectsWindowAndFocusedFrameDriftWithinSameApp() {
         let session = PasteSession(
             pastedText: "just see approved it",
             pastedAt: .now,
@@ -242,6 +242,6 @@ final class FocusedElementLocatorTests: XCTestCase {
             currentFocusedFrame: CGRect(x: 420, y: 400, width: 280, height: 110)
         )
 
-        XCTAssertTrue(isEligible)
+        XCTAssertFalse(isEligible)
     }
 }
