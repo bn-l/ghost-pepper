@@ -1,101 +1,147 @@
 import Foundation
-import Combine
+import Observation
+import OSLog
 
-enum DebugLogCategory: String, Codable {
-    case hotkey = "Hotkey"
-    case ocr = "OCR"
-    case cleanup = "Cleanup"
-    case model = "Model"
-    case performance = "Performance"
+protocol AppLogStoreReading {
+    func entries(since date: Date) throws -> [AppLogRecord]
 }
 
-struct DebugLogEntry: Identifiable, Equatable, Codable {
-    let id: UUID
-    let timestamp: Date
-    let category: DebugLogCategory
-    let message: String
+private enum DebugLogRefreshOutcome {
+    case success([AppLogRecord])
+    case failure(String)
+}
+
+struct UnifiedAppLogStoreReader: AppLogStoreReading {
+    let subsystem: String
+    let storeProvider: () throws -> OSLogStore
 
     init(
-        id: UUID = UUID(),
-        timestamp: Date,
-        category: DebugLogCategory,
-        message: String
+        subsystem: String = AppLogSystem.defaultSubsystem,
+        storeProvider: @escaping () throws -> OSLogStore = {
+            try OSLogStore(scope: .currentProcessIdentifier)
+        }
     ) {
-        self.id = id
-        self.timestamp = timestamp
-        self.category = category
-        self.message = message
+        self.subsystem = subsystem
+        self.storeProvider = storeProvider
+    }
+
+    func entries(since date: Date) throws -> [AppLogRecord] {
+        let store = try storeProvider()
+        let position = store.position(date: date)
+        let predicate = NSPredicate(format: "subsystem == %@", subsystem)
+        return try store
+            .getEntries(at: position, matching: predicate)
+            .compactMap { entry in
+                guard let logEntry = entry as? OSLogEntryLog else {
+                    return nil
+                }
+
+                return AppLogRecord.decode(from: logEntry.composedMessage)
+            }
+            .sorted { $0.timestamp < $1.timestamp }
     }
 }
 
-final class DebugLogStore: ObservableObject {
-    @Published private(set) var entries: [DebugLogEntry] = []
+@MainActor
+@Observable
+final class DebugLogStore {
+    private(set) var entries: [AppLogRecord] = []
+    private(set) var isRefreshing = false
+    private(set) var lastRefreshError: String?
 
     private let maxEntries: Int
-    private let storageURL: URL
+    private let lookbackInterval: TimeInterval
+    private let reader: AppLogStoreReading
     private let formatter: DateFormatter
+    private let refreshQueue = DispatchQueue(label: "GhostPepper.DebugLogStore.Refresh", qos: .utility)
+    private var refreshGeneration = 0
 
-    init(maxEntries: Int = 250, storageURL: URL? = nil) {
+    init(
+        maxEntries: Int = 250,
+        lookbackInterval: TimeInterval = 30 * 60,
+        reader: AppLogStoreReading = UnifiedAppLogStoreReader()
+    ) {
         self.maxEntries = maxEntries
-        self.storageURL = storageURL ?? Self.defaultStorageURL
+        self.lookbackInterval = lookbackInterval
+        self.reader = reader
         self.formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
-        entries = loadEntries()
-        trimToCapacity()
     }
 
     var formattedText: String {
+        formattedText(for: entries)
+    }
+
+    func refresh() {
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        let cutoff = Date.now.addingTimeInterval(-lookbackInterval)
+        let reader = self.reader
+        let maxEntries = self.maxEntries
+
+        isRefreshing = true
+
+        refreshQueue.async {
+            let result: DebugLogRefreshOutcome
+            do {
+                let loadedEntries = try reader.entries(since: cutoff)
+                if loadedEntries.count > maxEntries {
+                    result = .success(Array(loadedEntries.suffix(maxEntries)))
+                } else {
+                    result = .success(loadedEntries)
+                }
+            } catch {
+                result = .failure(error.localizedDescription)
+            }
+
+            Task { @MainActor [weak self] in
+                guard let self,
+                      generation == self.refreshGeneration else {
+                    return
+                }
+
+                self.isRefreshing = false
+
+                switch result {
+                case .success(let entries):
+                    self.entries = entries
+                    self.lastRefreshError = nil
+                case .failure(let errorDescription):
+                    self.entries = []
+                    self.lastRefreshError = errorDescription
+                }
+            }
+        }
+    }
+
+    func formattedText(for entries: [AppLogRecord]) -> String {
         entries.map { entry in
-            "[\(formatter.string(from: entry.timestamp))] [\(entry.category.rawValue)] \(entry.message)"
+            let header = "[\(formatter.string(from: entry.timestamp))] [\(entry.category.displayName)] [\(entry.level.displayName)] \(entry.event)"
+            let fieldText = entry.fields
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: " ")
+            let contextText = entry.context.fields
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: " ")
+            let errorText = entry.error.map { "errorDomain=\($0.domain) errorCode=\($0.code) errorDescription=\($0.description)" } ?? ""
+
+            return [header, entry.message, fieldText, contextText, errorText]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
         }
         .joined(separator: "\n\n")
     }
 
-    func record(category: DebugLogCategory, message: String) {
-        entries.append(
-            DebugLogEntry(
-                timestamp: Date(),
-                category: category,
-                message: message
-            )
-        )
-
-        trimToCapacity()
-        persistEntries()
-    }
-
-    func clear() {
-        entries.removeAll()
-        persistEntries()
-    }
-
-    private func trimToCapacity() {
-        if entries.count > maxEntries {
-            entries.removeFirst(entries.count - maxEntries)
+    func exportJSON(for entries: [AppLogRecord]) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(entries),
+              let text = String(data: data, encoding: .utf8) else {
+            return "[]"
         }
-    }
-
-    private func loadEntries() -> [DebugLogEntry] {
-        guard let data = try? Data(contentsOf: storageURL) else {
-            return []
-        }
-
-        return (try? JSONDecoder().decode([DebugLogEntry].self, from: data)) ?? []
-    }
-
-    private func persistEntries() {
-        let directory = storageURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let data = try? JSONEncoder().encode(entries) else {
-            return
-        }
-        try? data.write(to: storageURL, options: .atomic)
-    }
-
-    private static var defaultStorageURL: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport
-            .appendingPathComponent("GhostPepper", isDirectory: true)
-            .appendingPathComponent("debug-log.json")
+        return text
     }
 }

@@ -28,18 +28,18 @@ final class PerformanceTraceTests: XCTestCase {
             cleanupAttempted: true
         )
 
-        XCTAssertTrue(summary.contains("session=session-1"))
-        XCTAssertTrue(summary.contains("speechModel=parakeet-v3"))
-        XCTAssertTrue(summary.contains("hotkey_to_mic_live=80ms"))
-        XCTAssertTrue(summary.contains("hotkey_lift_to_mic_cold=250ms"))
-        XCTAssertTrue(summary.contains("transcription=500ms"))
-        XCTAssertTrue(summary.contains("cleanup=370ms"))
-        XCTAssertTrue(summary.contains("ocr=410ms"))
-        XCTAssertTrue(summary.contains("prompt_build=20ms"))
-        XCTAssertTrue(summary.contains("model_call=640ms"))
-        XCTAssertTrue(summary.contains("post_process=210ms"))
-        XCTAssertTrue(summary.contains("paste=160ms"))
-        XCTAssertTrue(summary.contains("total=2590ms"))
+        XCTAssertTrue(summary.contains("sessionID=session-1"))
+        XCTAssertTrue(summary.contains("speechModelID=parakeet-v3"))
+        XCTAssertTrue(summary.contains("hotkeyToMicLiveMS=80"))
+        XCTAssertTrue(summary.contains("hotkeyLiftToMicColdMS=250"))
+        XCTAssertTrue(summary.contains("transcriptionMS=500"))
+        XCTAssertTrue(summary.contains("cleanupMS=370"))
+        XCTAssertTrue(summary.contains("ocrMS=410"))
+        XCTAssertTrue(summary.contains("promptBuildMS=20"))
+        XCTAssertTrue(summary.contains("modelCallMS=640"))
+        XCTAssertTrue(summary.contains("postProcessMS=210"))
+        XCTAssertTrue(summary.contains("pasteMS=160"))
+        XCTAssertTrue(summary.contains("totalMS=2590"))
     }
 
     func testSummaryMarksSkippedCleanupWhenItWasNotAttempted() {
@@ -60,6 +60,6 @@ final class PerformanceTraceTests: XCTestCase {
             cleanupAttempted: false
         )
 
-        XCTAssertTrue(summary.contains("cleanup=skipped"))
+        XCTAssertTrue(summary.contains("cleanupMS=skipped"))
     }
 }
