@@ -19,8 +19,11 @@ actor SpeechTranscriber {
         "(blank audio)",
         "(no speech)",
         "[MUSIC]",
+        "(music)",
         "[APPLAUSE]",
+        "(applause)",
         "[LAUGHTER]",
+        "(laughter)",
     ]
 
     init(modelManager: ModelManager) {
@@ -31,9 +34,17 @@ actor SpeechTranscriber {
     static func removeArtifacts(from text: String) -> String {
         var cleaned = text
         for artifact in artifacts {
-            cleaned = cleaned.replacingOccurrences(of: artifact, with: "")
+            cleaned = cleaned.replacingOccurrences(
+                of: artifact,
+                with: "",
+                options: [.caseInsensitive, .literal]
+            )
         }
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return cleaned
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 
     /// Transcribes a 16 kHz mono PCM float audio buffer into text.

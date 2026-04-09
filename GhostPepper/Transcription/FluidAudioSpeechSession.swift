@@ -17,6 +17,7 @@ final class FluidAudioSpeechSession {
 
     init(
         sampleRate: Int = 16_000,
+        // Require at least half a second of speech before preferring a speaker as the target.
         substantialSpeakerThreshold: TimeInterval = 0.5,
         minimumKeptAudioDuration: TimeInterval = 0.75,
         mergeGapTolerance: TimeInterval = 0.05,
@@ -159,18 +160,26 @@ final class FluidAudioSpeechSession {
 
     private func selectTargetSpeakerID(from spans: [DiarizationSummary.Span]) -> String? {
         var durationsBySpeaker: [String: TimeInterval] = [:]
+        var firstAppearanceIndexBySpeaker: [String: Int] = [:]
 
-        for span in spans {
+        for (index, span) in spans.enumerated() {
             durationsBySpeaker[span.speakerID, default: 0] += span.duration
+            firstAppearanceIndexBySpeaker[span.speakerID] = min(
+                firstAppearanceIndexBySpeaker[span.speakerID] ?? index,
+                index
+            )
         }
 
-        for span in spans {
-            if let duration = durationsBySpeaker[span.speakerID], duration >= substantialSpeakerThreshold {
-                return span.speakerID
+        return durationsBySpeaker
+            .filter { $0.value >= substantialSpeakerThreshold }
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value {
+                    return (firstAppearanceIndexBySpeaker[lhs.key] ?? .max) < (firstAppearanceIndexBySpeaker[rhs.key] ?? .max)
+                }
+                return lhs.value > rhs.value
             }
-        }
-
-        return nil
+            .first?
+            .key
     }
 
     private func mergeKeptSpans(in spans: [DiarizationSummary.Span]) -> [DiarizationSummary.MergedSpan] {

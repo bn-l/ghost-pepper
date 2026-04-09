@@ -86,4 +86,12 @@ final class SpeechTranscriberTests: XCTestCase {
         let result = await transcriber.transcribe(audioBuffer: silence)
         XCTAssertNil(result, "Should return nil when model is not loaded")
     }
+
+    func testRemoveArtifactsStripsCaseInsensitiveWhisperMarkers() {
+        let cleaned = SpeechTranscriber.removeArtifacts(
+            from: "hello [blank_audio] there [No_Speech] (MUSIC) world"
+        )
+
+        XCTAssertEqual(cleaned, "hello  there  world".replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespaces))
+    }
 }
