@@ -2,17 +2,19 @@ import Foundation
 
 final class RecordingSessionCoordinator: @unchecked Sendable {
     typealias FinalizationResult = (filteredTranscript: String?, summary: DiarizationSummary)
+    private enum FinishStrategy {
+        case direct(() async -> FinalizationResult)
+        case withSpans(([DiarizationSummary.Span]) async -> FinalizationResult)
+    }
 
     private let appendAudioChunkHandler: ([Float]) -> Void
-    private let finishHandler: (() async -> FinalizationResult)?
-    private let finishWithSpansHandler: (([DiarizationSummary.Span]) async -> FinalizationResult)?
+    private let finishStrategy: FinishStrategy
 
     private(set) var filteredTranscript: String?
 
     init(session: FluidAudioSpeechSession) {
         appendAudioChunkHandler = session.appendAudioChunk
-        finishHandler = nil
-        finishWithSpansHandler = { spans in
+        finishStrategy = .withSpans { spans in
             let result = await session.finalize(spans: spans)
             return (filteredTranscript: result.filteredTranscript, summary: result.summary)
         }
@@ -28,12 +30,11 @@ final class RecordingSessionCoordinator: @unchecked Sendable {
             session.appendAudioChunk(samples)
             processAudioChunk(samples)
         }
-        finishHandler = {
+        finishStrategy = .direct {
             let result = await session.finalize(spans: finish())
             cleanup()
             return (filteredTranscript: result.filteredTranscript, summary: result.summary)
         }
-        finishWithSpansHandler = nil
     }
 
     init(
@@ -41,8 +42,7 @@ final class RecordingSessionCoordinator: @unchecked Sendable {
         finish: @escaping () async -> FinalizationResult
     ) {
         appendAudioChunkHandler = appendAudioChunk
-        finishHandler = finish
-        finishWithSpansHandler = nil
+        finishStrategy = .direct(finish)
     }
 
     func appendAudioChunk(_ samples: [Float]) {
@@ -50,30 +50,37 @@ final class RecordingSessionCoordinator: @unchecked Sendable {
     }
 
     func finish() async -> DiarizationSummary {
-        guard let finishHandler else {
-            return DiarizationSummary(
-                spans: [],
-                mergedKeptSpans: [],
-                targetSpeakerID: nil,
-                targetSpeakerDuration: 0,
-                keptAudioDuration: 0,
-                usedFallback: true,
-                fallbackReason: .noUsableSpeakerSpans
-            )
+        switch finishStrategy {
+        case .direct(let finish):
+            let result = await finish()
+            filteredTranscript = result.filteredTranscript
+            return result.summary
+        case .withSpans:
+            assertionFailure("finish() called on a spans-driven RecordingSessionCoordinator")
+            return Self.invalidFinishSummary()
         }
-
-        let result = await finishHandler()
-        filteredTranscript = result.filteredTranscript
-        return result.summary
     }
 
     func finish(spans: [DiarizationSummary.Span]) async -> DiarizationSummary {
-        guard let finishWithSpansHandler else {
+        switch finishStrategy {
+        case .withSpans(let finish):
+            let result = await finish(spans)
+            filteredTranscript = result.filteredTranscript
+            return result.summary
+        case .direct:
             return await finish()
         }
+    }
 
-        let result = await finishWithSpansHandler(spans)
-        filteredTranscript = result.filteredTranscript
-        return result.summary
+    private static func invalidFinishSummary() -> DiarizationSummary {
+        DiarizationSummary(
+            spans: [],
+            mergedKeptSpans: [],
+            targetSpeakerID: nil,
+            targetSpeakerDuration: 0,
+            keptAudioDuration: 0,
+            usedFallback: true,
+            fallbackReason: .noUsableSpeakerSpans
+        )
     }
 }

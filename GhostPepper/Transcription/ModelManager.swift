@@ -24,6 +24,8 @@ final class ModelManager {
     private var fluidAudioManager: FluidAudioManagerBox?
     @ObservationIgnored
     private var sortformerModels: SortformerModels?
+    @ObservationIgnored
+    private var pendingModelName: String?
 
     private(set) var state: ModelManagerState = .idle
     private(set) var downloadProgress: Double?
@@ -62,6 +64,27 @@ final class ModelManager {
 
     func loadModel(name: String? = nil) async {
         let requestedName = name ?? modelName
+        if state == .loading {
+            pendingModelName = requestedName
+            logger?.info(
+                "speech.load_queued",
+                "Queued a speech model switch while another load was already in progress.",
+                fields: ["modelName": requestedName]
+            )
+            return
+        }
+
+        defer {
+            if let pendingModelName {
+                self.pendingModelName = nil
+                if pendingModelName != modelName || state == .error {
+                    Task { @MainActor [weak self] in
+                        await self?.loadModel(name: pendingModelName)
+                    }
+                }
+            }
+        }
+
         guard let requestedModel = SpeechModelCatalog.model(named: requestedName) else {
             let missingModelError = NSError(
                 domain: "GhostPepper.ModelManager",
@@ -79,8 +102,6 @@ final class ModelManager {
             return
         }
         modelName = requestedName
-
-        guard state == .idle || state == .error else { return }
 
         state = .loading
         error = nil
@@ -123,7 +144,6 @@ final class ModelManager {
     }
 
     func transcribe(audioBuffer: [Float]) async -> String? {
-        guard !audioBuffer.isEmpty else { return nil }
         guard let model = SpeechModelCatalog.model(named: modelName) else { return nil }
 
         do {
@@ -165,11 +185,11 @@ final class ModelManager {
 
             return RecordingSessionCoordinator(
                 session: session,
-                processAudioChunk: { samples in
+                processAudioChunk: { [weak self] samples in
                     do {
                         _ = try diarizer.processSamples(samples)
                     } catch {
-                        self.logger?.warning("speaker_filter.chunk_failed", "Speaker filtering diarization chunk failed.", error: error)
+                        self?.logger?.warning("speaker_filter.chunk_failed", "Speaker filtering diarization chunk failed.", error: error)
                     }
                 },
                 finish: {
@@ -190,10 +210,18 @@ final class ModelManager {
         let modelsDir = Self.whisperModelsDirectory
         try? FileManager.default.createDirectory(at: modelsDir, withIntermediateDirectories: true)
 
-        let needsDownload = !Self.modelIsCached(SpeechModelCatalog.model(named: modelName)!)
+        guard let model = SpeechModelCatalog.model(named: modelName) else {
+            throw NSError(
+                domain: "GhostPepper.ModelManager",
+                code: 404,
+                userInfo: [NSLocalizedDescriptionKey: "Unknown Whisper model \(modelName)"]
+            )
+        }
+
+        let needsDownload = !Self.modelIsCached(model)
         if needsDownload {
             let progressHandler: @Sendable (Progress) -> Void = { [weak self] progress in
-                Task { @MainActor [weak self] in
+                Task { @MainActor in
                     self?.downloadProgress = progress.fractionCompleted
                 }
             }
@@ -252,6 +280,10 @@ final class ModelManager {
         fluidAudioManager = FluidAudioManagerBox(manager: manager)
     }
 
+    func releaseSpeakerFilteringResources() {
+        sortformerModels = nil
+    }
+
     private func resetLoadedModels() {
         clearLoadedModelInstances()
         state = .idle
@@ -261,6 +293,7 @@ final class ModelManager {
         whisperKit = nil
         fluidAudioManager = nil
         sortformerModels = nil
+        pendingModelName = nil
         downloadProgress = nil
     }
 
@@ -278,9 +311,15 @@ final class ModelManager {
             return sortformerModels
         }
 
-        let models = try await SortformerModels.loadFromHuggingFace(config: .default)
-        sortformerModels = models
-        return models
+        do {
+            let models = try await SortformerModels.loadFromHuggingFace(config: .default)
+            sortformerModels = models
+            return models
+        } catch {
+            sortformerModels = nil
+            logger?.warning("speaker_filter.sortformer_load_failed", "Failed to load Sortformer diarization models.", error: error)
+            throw error
+        }
     }
 
     private static func diarizationSpans(from segmentsBySpeaker: [[SortformerSegment]]) -> [DiarizationSummary.Span] {

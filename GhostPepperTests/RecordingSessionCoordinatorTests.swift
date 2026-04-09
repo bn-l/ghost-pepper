@@ -80,6 +80,26 @@ final class RecordingSessionCoordinatorTests: XCTestCase {
             [15, 16, 17, 18, 19],
         ])
     }
+
+    func testSpansDrivenCoordinatorRejectsFinishWithoutSpans() async {
+        let session = FluidAudioSpeechSession(
+            sampleRate: 10,
+            transcribeFilteredAudio: { _ in
+                "unexpected"
+            }
+        )
+        let coordinator = RecordingSessionCoordinator(
+            session: session,
+            processAudioChunk: { _ in },
+            finish: { [] }
+        )
+
+        let summary = await coordinator.finish()
+
+        XCTAssertTrue(summary.usedFallback)
+        XCTAssertEqual(summary.fallbackReason, .noUsableSpeakerSpans)
+        XCTAssertNil(summary.targetSpeakerID)
+    }
 }
 
 private actor LockedValue<Value> {

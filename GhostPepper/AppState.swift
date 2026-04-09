@@ -507,6 +507,7 @@ final class AppState {
     private func clearRecordingSessionCoordinator() {
         audioRecorder.onConvertedAudioChunk = nil
         activeRecordingSessionCoordinator = nil
+        modelManager.releaseSpeakerFilteringResources()
     }
 
     private var selectedSpeechModelSupportsSpeakerFiltering: Bool {
