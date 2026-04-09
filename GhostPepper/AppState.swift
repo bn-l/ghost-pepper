@@ -67,9 +67,7 @@ final class AppState {
             )
             debugLogStore.refresh()
             if observabilityMode != oldValue {
-                logSystem.logger(category: .ui) { [weak self] in
-                    self?.currentLogContext ?? .empty
-                }.notice(
+                uiLogger.notice(
                     "observability.mode_changed",
                     "Observability mode changed.",
                     fields: ["mode": observabilityMode.rawValue]
@@ -84,7 +82,7 @@ final class AppState {
     }
     var cleanupPrompt: String {
         didSet {
-            cleanupSettingsDefaults.set(cleanupPrompt, forKey: Self.cleanupPromptDefaultsKey)
+            scheduleCleanupPromptPersistence()
         }
     }
     var speechModel: String {
@@ -169,9 +167,13 @@ final class AppState {
     @ObservationIgnored
     private var hotkeyMonitorStarted = false
     @ObservationIgnored
+    private var isTranscribing = false
+    @ObservationIgnored
     private var clipboardFallbackDismissTask: Task<Void, Never>?
     @ObservationIgnored
     private var loadingOverlayDismissTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var cleanupPromptPersistTask: Task<Void, Never>?
 
     private static let cleanupBackendDefaultsKey = "cleanupBackend"
     private static let cleanupEnabledDefaultsKey = "cleanupEnabled"
@@ -183,6 +185,7 @@ final class AppState {
     private static let playSoundsDefaultsKey = "playSounds"
     private static let emptyTranscriptionCancelThresholdSampleCount = 80_000
     private static let speechModelErrorPrefix = "Failed to load speech model: "
+    private static let cleanupPromptPersistenceDelay: Duration = .milliseconds(300)
 
     nonisolated static let defaultPushToTalkChord = KeyChord(keys: Set([
         PhysicalKey(keyCode: 54),  // Right Command
@@ -303,26 +306,6 @@ final class AppState {
             }
         )
 
-        cleanupSettingsDefaults.set(storedCleanupEnabled, forKey: Self.cleanupEnabledDefaultsKey)
-        cleanupSettingsDefaults.set(storedCleanupPrompt, forKey: Self.cleanupPromptDefaultsKey)
-        cleanupSettingsDefaults.set(storedSpeechModel, forKey: Self.speechModelDefaultsKey)
-        cleanupSettingsDefaults.set(storedCleanupBackend.rawValue, forKey: Self.cleanupBackendDefaultsKey)
-        cleanupSettingsDefaults.set(
-            storedFrontmostWindowContextEnabled,
-            forKey: Self.frontmostWindowContextEnabledDefaultsKey
-        )
-        cleanupSettingsDefaults.set(
-            storedPostPasteLearningEnabled,
-            forKey: Self.postPasteLearningEnabledDefaultsKey
-        )
-        cleanupSettingsDefaults.set(
-            storedIgnoreOtherSpeakers,
-            forKey: Self.ignoreOtherSpeakersDefaultsKey
-        )
-        cleanupSettingsDefaults.set(
-            playSounds,
-            forKey: Self.playSoundsDefaultsKey
-        )
         persistShortcutBindingsIfNeeded()
         hotkeyMonitor.updateBindings(shortcutBindings)
         self.textPaster.onPaste = { [postPasteLearningCoordinator = self.postPasteLearningCoordinator] session in
@@ -588,8 +571,6 @@ final class AppState {
             recordingLogger.error("recording.start_failed", errorMessage ?? "Failed to start recording.", error: error)
         }
     }
-
-    private var isTranscribing = false
 
     private func stopRecordingAndTranscribe() async {
         guard status == .recording, !isTranscribing else { return }
@@ -917,6 +898,7 @@ final class AppState {
     }
 
     func prepareForTermination() {
+        flushPendingCleanupPromptPersistence()
         recordingOCRPrefetch.cancel()
         textCleanupManager.shutdownBackend()
     }
@@ -967,50 +949,58 @@ final class AppState {
             .merged(with: activePerformanceTrace?.logContext ?? .empty)
     }
 
-    @ObservationIgnored
-    private lazy var appLogger = logSystem.logger(category: .app) { [weak self] in
-        self?.currentLogContext ?? .empty
+    private func scheduleCleanupPromptPersistence() {
+        cleanupPromptPersistTask?.cancel()
+        let prompt = cleanupPrompt
+        cleanupPromptPersistTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.cleanupPromptPersistenceDelay)
+            guard let self, !Task.isCancelled else {
+                return
+            }
+
+            self.cleanupSettingsDefaults.set(prompt, forKey: Self.cleanupPromptDefaultsKey)
+            self.cleanupPromptPersistTask = nil
+        }
+    }
+
+    private func flushPendingCleanupPromptPersistence() {
+        cleanupPromptPersistTask?.cancel()
+        cleanupPromptPersistTask = nil
+        cleanupSettingsDefaults.set(cleanupPrompt, forKey: Self.cleanupPromptDefaultsKey)
+    }
+
+    private func makeLogger(_ category: AppLogCategory) -> AppLogger {
+        logSystem.logger(category: category) { [weak self] in
+            self?.currentLogContext ?? .empty
+        }
     }
 
     @ObservationIgnored
-    private lazy var hotkeyLogger = logSystem.logger(category: .hotkey) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var appLogger = makeLogger(.app)
 
     @ObservationIgnored
-    private lazy var permissionsLogger = logSystem.logger(category: .permissions) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var hotkeyLogger = makeLogger(.hotkey)
 
     @ObservationIgnored
-    private lazy var recordingLogger = logSystem.logger(category: .recording) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var permissionsLogger = makeLogger(.permissions)
 
     @ObservationIgnored
-    private lazy var transcriptionLogger = logSystem.logger(category: .transcription) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var recordingLogger = makeLogger(.recording)
 
     @ObservationIgnored
-    private lazy var ocrLogger = logSystem.logger(category: .ocr) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var transcriptionLogger = makeLogger(.transcription)
 
     @ObservationIgnored
-    private lazy var modelLogger = logSystem.logger(category: .model) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var ocrLogger = makeLogger(.ocr)
 
     @ObservationIgnored
-    private lazy var performanceLogger = logSystem.logger(category: .performance) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var modelLogger = makeLogger(.model)
 
     @ObservationIgnored
-    private lazy var uiLogger = logSystem.logger(category: .ui) { [weak self] in
-        self?.currentLogContext ?? .empty
-    }
+    private lazy var performanceLogger = makeLogger(.performance)
+
+    @ObservationIgnored
+    private lazy var uiLogger = makeLogger(.ui)
 
     func loadSpeechModel(name: String) async {
         await modelManager.loadModel(name: name)
