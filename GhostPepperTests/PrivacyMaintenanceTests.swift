@@ -50,4 +50,23 @@ final class PrivacyMaintenanceTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: legacyScreenContextKey))
         XCTAssertNil(defaults.object(forKey: legacyShortcutKey))
     }
+
+    func testMigrationKeepsCurrentDefaultsWhileRemovingLegacyPepperChatKeys() throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        defaults.set("https://example.invalid", forKey: legacyHostKey)
+        defaults.set("token", forKey: legacyAPIKeyKey)
+        defaults.set("openai_whisper-small.en", forKey: "speechModel")
+        defaults.set(true, forKey: "cleanupEnabled")
+        defaults.set("Prompt text", forKey: "cleanupPrompt")
+
+        let maintenance = PrivacyMaintenance(applicationSupportURL: nil)
+        maintenance.run(defaults: defaults)
+
+        XCTAssertNil(defaults.object(forKey: legacyHostKey))
+        XCTAssertNil(defaults.object(forKey: legacyAPIKeyKey))
+        XCTAssertEqual(defaults.string(forKey: "speechModel"), "openai_whisper-small.en")
+        XCTAssertEqual(defaults.object(forKey: "cleanupEnabled") as? Bool, true)
+        XCTAssertEqual(defaults.string(forKey: "cleanupPrompt"), "Prompt text")
+    }
 }

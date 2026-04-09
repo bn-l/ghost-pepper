@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import CoreAudio
 @testable import GhostPepper
 
 private final class FakeHotkeyMonitor: HotkeyMonitoring {
@@ -44,6 +45,84 @@ private final class FakeAppRelauncher: AppRelaunching {
     }
 }
 
+private final class GhostPepperTestDeviceManager: AudioDeviceManaging {
+    let devices: [AudioInputDevice]
+    let defaultDeviceUID: String?
+
+    init(devices: [AudioInputDevice], defaultDeviceUID: String? = nil) {
+        self.devices = devices
+        self.defaultDeviceUID = defaultDeviceUID
+    }
+
+    func listInputDevices() -> [AudioInputDevice] {
+        devices
+    }
+
+    func defaultInputDevice() -> AudioInputDevice? {
+        guard let defaultDeviceUID else {
+            return devices.first
+        }
+
+        return inputDevice(uid: defaultDeviceUID)
+    }
+
+    func inputDevice(uid: String) -> AudioInputDevice? {
+        devices.first(where: { $0.uid == uid })
+    }
+
+    func addInputDeviceListObserver(
+        queue: DispatchQueue,
+        handler: @escaping @Sendable () -> Void
+    ) -> AudioHardwareObserving? {
+        nil
+    }
+
+    func addStateObservers(
+        for device: AudioInputDevice,
+        queue: DispatchQueue,
+        handler: @escaping @Sendable () -> Void
+    ) -> [AudioHardwareObserving] {
+        []
+    }
+}
+
+private final class GhostPepperTestAudioSession: AudioInputCapturing, @unchecked Sendable {
+    var onSamples: (@Sendable (AudioInputBufferBatch) -> Void)?
+    var startError: Error?
+    private(set) var startedDevices: [AudioInputDevice] = []
+
+    func start(device: AudioInputDevice) async throws -> AudioInputStreamFormat {
+        startedDevices.append(device)
+        if let startError {
+            throw startError
+        }
+
+        return AudioInputStreamFormat(sampleRate: 16_000, channelCount: 1)
+    }
+
+    func stop() async {}
+}
+
+private final class FlakyStartAudioSession: AudioInputCapturing, @unchecked Sendable {
+    var onSamples: (@Sendable (AudioInputBufferBatch) -> Void)?
+    private var remainingFailures: Int
+
+    init(failureCount: Int) {
+        self.remainingFailures = failureCount
+    }
+
+    func start(device: AudioInputDevice) async throws -> AudioInputStreamFormat {
+        if remainingFailures > 0 {
+            remainingFailures -= 1
+            throw AudioRecorderError.noInputAvailable
+        }
+
+        return AudioInputStreamFormat(sampleRate: 16_000, channelCount: 1)
+    }
+
+    func stop() async {}
+}
+
 private final class TestCounterBox: @unchecked Sendable {
     private let lock = NSLock()
     private var value = 0
@@ -63,6 +142,37 @@ private final class TestCounterBox: @unchecked Sendable {
 final class GhostPepperTests: XCTestCase {
     private func makeDebugLogStore() -> DebugLogStore {
         DebugLogStore(reader: StaticAppLogStoreReader(result: .success([])))
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 1,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = Date.now.addingTimeInterval(timeout)
+        while Date.now < deadline {
+            if condition() {
+                return
+            }
+
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTFail("Condition was not met before timeout.", file: file, line: line)
+    }
+
+    private func makeInputDevice(uid: String, name: String) -> AudioInputDevice {
+        let hashedID = uid.utf8.reduce(UInt32(5381)) { partialResult, byte in
+            ((partialResult << 5) &+ partialResult) &+ UInt32(byte)
+        }
+        return AudioInputDevice(
+            id: AudioDeviceID(max(hashedID, 1)),
+            uid: uid,
+            name: name,
+            isAlive: true,
+            transportType: kAudioDeviceTransportTypeBuiltIn
+        )
     }
 
     override func tearDown() {
@@ -120,6 +230,34 @@ final class GhostPepperTests: XCTestCase {
         XCTAssertNotNil(hostingView)
         XCTAssertEqual(hostingView?.sizingOptions, [])
         XCTAssertFalse(panel?.contentView is NSHostingView<OverlayPillView>)
+    }
+
+    func testLifecycleDelegateRunsTerminationCleanupSynchronously() {
+        let delegate = GhostPepperLifecycleDelegate()
+        var invocationCount = 0
+        delegate.onWillTerminate = {
+            invocationCount += 1
+        }
+
+        delegate.applicationWillTerminate(
+            Notification(name: NSApplication.willTerminateNotification)
+        )
+
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testOverlayCancelledDismissTaskDoesNotHideNewerPersistentMessage() throws {
+        let overlay = RecordingOverlayController()
+        overlay.show(message: .clipboardFallback)
+        overlay.show(message: .recording)
+
+        Thread.sleep(forTimeInterval: 3.3)
+
+        let panel: NSPanel? = unwrapPrivateOptional(named: "panel", from: overlay)
+        defer { overlay.dismiss() }
+
+        XCTAssertNotNil(panel)
+        XCTAssertTrue(panel?.isVisible == true)
     }
 
     func testAppStateLoadsDefaultShortcutBindingsIntoHotkeyMonitor() async throws {
@@ -935,6 +1073,62 @@ final class GhostPepperTests: XCTestCase {
         XCTAssertEqual(shutdownCount, 1)
     }
 
+    func testAppStateDebouncesCleanupPromptPersistence() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults
+        )
+
+        appState.cleanupPrompt = "First prompt"
+        appState.cleanupPrompt = "Second prompt"
+
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(defaults.string(forKey: "cleanupPrompt"))
+
+        await waitUntil {
+            defaults.string(forKey: "cleanupPrompt") == "Second prompt"
+        }
+    }
+
+    func testCancelledRecordingLogsCancellationInsteadOfCompletion() async throws {
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let monitor = FakeHotkeyMonitor()
+        let device = makeInputDevice(uid: "builtin", name: "MacBook Microphone")
+        let session = GhostPepperTestAudioSession()
+        let recorder = AudioRecorder(
+            preferredInputDeviceUIDProvider: { device.uid },
+            deviceManager: GhostPepperTestDeviceManager(devices: [device], defaultDeviceUID: device.uid),
+            sessionFactory: { session }
+        )
+        let appState = AppState(
+            hotkeyMonitor: monitor,
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults,
+            audioRecorder: recorder
+        )
+        appState.playSounds = false
+        let observer = RecordingLogObserver()
+        appState.logSystem.observer = observer
+
+        await appState.startHotkeyMonitor()
+        monitor.onPushToTalkStart?()
+        await waitUntil {
+            appState.status == .recording
+        }
+
+        monitor.onPushToTalkStop?()
+        await waitUntil(timeout: 2) {
+            observer.records.contains(where: { $0.event == "dictation.cancelled" })
+        }
+
+        XCTAssertTrue(observer.records.contains(where: { $0.event == "dictation.cancelled" }))
+        XCTAssertFalse(observer.records.contains(where: { $0.event == "dictation.completed" }))
+    }
+
     func testWhisperRecordingIgnoresSpeakerFilteringSetting() async throws {
         let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
         defaults.removePersistentDomain(forName: #function)
@@ -1049,6 +1243,60 @@ final class GhostPepperTests: XCTestCase {
 
         XCTAssertFalse(granted)
         XCTAssertEqual(PermissionChecker.microphoneStatus(), .denied)
+    }
+
+    func testTryItControllerClearsStickyMonitorFailureAfterSuccessfulRetry() async {
+        let monitor = FakeHotkeyMonitor()
+        let session = FlakyStartAudioSession(failureCount: 1)
+        let device = makeInputDevice(uid: "builtin", name: "MacBook Microphone")
+        let controller = TryItController(
+            transcriber: SpeechTranscriber(modelManager: ModelManager()),
+            recorderFactory: {
+                AudioRecorder(
+                    preferredInputDeviceUIDProvider: { device.uid },
+                    deviceManager: GhostPepperTestDeviceManager(devices: [device], defaultDeviceUID: device.uid),
+                    sessionFactory: { session }
+                )
+            },
+            hotkeyMonitorFactory: { _ in
+                monitor
+            }
+        )
+
+        controller.start(onAdvance: {})
+        monitor.onRecordingStart?()
+        await waitUntil {
+            controller.monitorStartFailed
+        }
+
+        monitor.onRecordingStart?()
+        await waitUntil {
+            controller.isRecording && controller.monitorStartFailed == false
+        }
+
+        XCTAssertTrue(controller.isRecording)
+        XCTAssertFalse(controller.monitorStartFailed)
+        controller.cleanup()
+    }
+
+    func testOnboardingWindowDismissRestoresAccessoryActivationPolicy() throws {
+        let originalPolicy = NSApp.activationPolicy()
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: #function))
+        defaults.removePersistentDomain(forName: #function)
+        let controller = OnboardingWindowController()
+        let appState = AppState(
+            hotkeyMonitor: FakeHotkeyMonitor(),
+            chordBindingStore: ChordBindingStore(defaults: defaults),
+            cleanupSettingsDefaults: defaults
+        )
+
+        controller.show(appState: appState, onComplete: {})
+        XCTAssertEqual(NSApp.activationPolicy(), .regular)
+
+        controller.dismiss()
+
+        XCTAssertEqual(NSApp.activationPolicy(), .accessory)
+        NSApp.setActivationPolicy(originalPolicy)
     }
 
     private func unwrapPrivateOptional<T>(named name: String, from object: Any) -> T? {

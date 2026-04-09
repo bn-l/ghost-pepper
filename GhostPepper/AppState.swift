@@ -136,6 +136,7 @@ final class AppState {
     }
 
     static func emptyTranscriptionDisposition(forAudioSampleCount sampleCount: Int) -> EmptyTranscriptionDisposition {
+        // 80,000 samples is roughly 5 seconds of mono 16 kHz audio.
         if sampleCount < emptyTranscriptionCancelThresholdSampleCount {
             return .cancel
         }
@@ -179,6 +180,7 @@ final class AppState {
     private static let playSoundsDefaultsKey = "playSounds"
     private static let emptyTranscriptionCancelThresholdSampleCount = 80_000
     private static let speechModelErrorPrefix = "Failed to load speech model: "
+    // Debounce prompt persistence so prompt editing does not write defaults on every keystroke.
     private static let cleanupPromptPersistenceDelay: Duration = .milliseconds(300)
     nonisolated static let cleanupBackendID = CleanupBackendDefaults.localModelsID
 
@@ -349,7 +351,15 @@ final class AppState {
         // Enable launch at login by default on first run
         if !UserDefaults.standard.bool(forKey: "hasSetLaunchAtLogin") {
             UserDefaults.standard.set(true, forKey: "hasSetLaunchAtLogin")
-            try? SMAppService.mainApp.register()
+            do {
+                try SMAppService.mainApp.register()
+            } catch {
+                permissionsLogger.warning(
+                    "launch_at_login.register_failed",
+                    "Failed to register Ghost Pepper for launch at login.",
+                    error: error
+                )
+            }
         }
 
         if !skipPermissionPrompts {
@@ -525,6 +535,9 @@ final class AppState {
                 loadingOverlayDismissTask?.cancel()
                 loadingOverlayDismissTask = Task { @MainActor [weak self] in
                     try? await Task.sleep(for: .milliseconds(1500))
+                    guard !Task.isCancelled else {
+                        return
+                    }
                     self?.overlay.dismiss()
                 }
             }
@@ -542,6 +555,11 @@ final class AppState {
             return
         }
 
+        soundEffects.playStart()
+        overlay.show(message: .recording)
+        isRecording = true
+        status = .recording
+
         do {
             await prepareRecordingSessionIfNeeded()
             if cleanupEnabled && canAttemptCleanup && frontmostWindowContextEnabled {
@@ -552,15 +570,13 @@ final class AppState {
             await audioInputCoordinator.pausePreviewForCapture()
             try await audioRecorder.startRecording()
             recordingLogger.notice("recording.started", "Recording started.")
-            soundEffects.playStart()
-            overlay.show(message: .recording)
-            isRecording = true
-            status = .recording
         } catch {
             recordingOCRPrefetch.cancel()
             audioInputCoordinator.resumePreviewAfterCapture()
             releasePipeline(owner: .liveRecording)
             activePerformanceTrace = nil
+            isRecording = false
+            overlay.dismiss(ifShowing: .recording)
             errorMessage = "Failed to start recording: \(error.localizedDescription)"
             status = .error
             recordingLogger.error("recording.start_failed", errorMessage ?? "Failed to start recording.", error: error)
@@ -609,11 +625,15 @@ final class AppState {
             case .cancel:
                 overlay.dismiss()
                 transcriptionLogger.info("transcription.empty_short_recording", "Empty transcription cancelled after a short recording.")
+                cancelActivePerformanceTraceIfNeeded(
+                    event: "dictation.cancelled",
+                    message: "Dictation pipeline cancelled before producing a usable transcription."
+                )
             case .showNoSoundDetected:
                 overlay.show(message: .noSoundDetected)
                 transcriptionLogger.warning("transcription.no_sound_detected", "No sound detected for a long recording.")
+                completeActivePerformanceTraceIfNeeded()
             }
-            completeActivePerformanceTraceIfNeeded()
         }
 
         status = .ready
@@ -715,6 +735,9 @@ final class AppState {
         clipboardFallbackDismissTask?.cancel()
         clipboardFallbackDismissTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(2500))
+            guard !Task.isCancelled else {
+                return
+            }
             self?.overlay.dismiss(ifShowing: .clipboardFallback)
         }
     }
@@ -750,8 +773,24 @@ final class AppState {
     }
 
     private func persistShortcutBindingsIfNeeded() {
-        try? chordBindingStore.setBinding(pushToTalkChord, for: .pushToTalk)
-        try? chordBindingStore.setBinding(toggleToTalkChord, for: .toggleToTalk)
+        persistShortcutBinding(pushToTalkChord, for: .pushToTalk)
+        persistShortcutBinding(toggleToTalkChord, for: .toggleToTalk)
+    }
+
+    private func persistShortcutBinding(_ chord: KeyChord, for action: ChordAction) {
+        do {
+            try chordBindingStore.setBinding(chord, for: action)
+        } catch {
+            hotkeyLogger.warning(
+                "shortcut.persist_failed",
+                "Failed to persist a shortcut binding.",
+                fields: [
+                    "action": action.rawValue,
+                    "displayString": chord.displayString
+                ],
+                error: error
+            )
+        }
     }
 
     private var canAttemptCleanup: Bool {
@@ -827,6 +866,30 @@ final class AppState {
         performanceLogger.notice(
             "dictation.completed",
             "Dictation pipeline completed.",
+            fields: trace.fields(
+                speechModelID: speechModel,
+                cleanupBackendID: Self.cleanupBackendID,
+                cleanupAttempted: activeCleanupAttempted
+            )
+        )
+
+        activePerformanceTrace = nil
+        activeCleanupAttempted = false
+        recordingOCRPrefetch.cancel()
+    }
+
+    private func cancelActivePerformanceTraceIfNeeded(event: String, message: String) {
+        guard var trace = activePerformanceTrace else {
+            return
+        }
+
+        if trace.pasteEndAt == nil {
+            trace.pasteEndAt = .now
+        }
+
+        performanceLogger.info(
+            event,
+            message,
             fields: trace.fields(
                 speechModelID: speechModel,
                 cleanupBackendID: Self.cleanupBackendID,
@@ -939,14 +1002,13 @@ final class AppState {
 
     private func scheduleCleanupPromptPersistence() {
         cleanupPromptPersistTask?.cancel()
-        let prompt = cleanupPrompt
         cleanupPromptPersistTask = Task { [weak self] in
             try? await Task.sleep(for: Self.cleanupPromptPersistenceDelay)
             guard let self, !Task.isCancelled else {
                 return
             }
 
-            self.cleanupSettingsDefaults.set(prompt, forKey: Self.cleanupPromptDefaultsKey)
+            self.cleanupSettingsDefaults.set(self.cleanupPrompt, forKey: Self.cleanupPromptDefaultsKey)
             self.cleanupPromptPersistTask = nil
         }
     }
