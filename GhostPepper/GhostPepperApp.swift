@@ -1,5 +1,9 @@
 import SwiftUI
 
+enum AppStorageKeys {
+    static let onboardingCompleted = "onboardingCompleted"
+}
+
 @MainActor
 final class GhostPepperLifecycleDelegate: NSObject, NSApplicationDelegate {
     var onWillTerminate: (() -> Void)?
@@ -12,9 +16,10 @@ final class GhostPepperLifecycleDelegate: NSObject, NSApplicationDelegate {
 @main
 struct GhostPepperApp: App {
     private static let automaticTerminationReason = "Ghost Pepper keeps a persistent menu bar presence."
+    private static let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     @NSApplicationDelegateAdaptor(GhostPepperLifecycleDelegate.self) private var lifecycleDelegate
     @State private var appState = AppState()
-    @AppStorage("onboardingCompleted") private var onboardingCompleted = false
+    @AppStorage(AppStorageKeys.onboardingCompleted) private var onboardingCompleted = false
     @State private var hasInitialized = false
     private let onboardingController = OnboardingWindowController()
 
@@ -51,13 +56,20 @@ struct GhostPepperApp: App {
                 }
             }
             .onAppear {
+                guard !hasInitialized else { return }
+                hasInitialized = true
+
+                // App-hosted XCTest launches should not present onboarding or mutate
+                // global activation policy just because the test host booted the app.
+                guard Self.isRunningTests == false else {
+                    return
+                }
+
+                ProcessInfo.processInfo.disableAutomaticTermination(Self.automaticTerminationReason)
                 lifecycleDelegate.onWillTerminate = {
                     ProcessInfo.processInfo.enableAutomaticTermination(Self.automaticTerminationReason)
                     appState.prepareForTermination()
                 }
-                ProcessInfo.processInfo.disableAutomaticTermination(Self.automaticTerminationReason)
-                guard !hasInitialized else { return }
-                hasInitialized = true
                 if onboardingCompleted {
                     Task { await appState.initialize() }
                 } else {

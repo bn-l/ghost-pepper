@@ -369,7 +369,7 @@ final class AppState {
         FocusedElementLocator.startPasteTargetTracking()
 
         status = .loading
-        let showOverlay = UserDefaults.standard.bool(forKey: "onboardingCompleted")
+        let showOverlay = UserDefaults.standard.bool(forKey: AppStorageKeys.onboardingCompleted)
         let initializationInterval = appLogger.beginInterval(
             "app.initialization",
             "App initialization started.",
