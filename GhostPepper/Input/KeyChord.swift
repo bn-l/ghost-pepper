@@ -24,36 +24,28 @@ struct KeyChord: Codable, Hashable {
     }
 
     var displayString: String {
-        keys
-            .sorted {
-                if $0.sortOrder == $1.sortOrder {
-                    if $0.displayName == $1.displayName {
-                        return $0.keyCode < $1.keyCode
-                    }
-
-                    return $0.displayName < $1.displayName
-                }
-
-                return $0.sortOrder < $1.sortOrder
-            }
+        sortedKeysForDisplay()
             .map(\.displayName)
             .joined(separator: " + ")
     }
 
     var shortcutRecorderDisplayString: String {
-        keys
-            .sorted {
-                if $0.sortOrder == $1.sortOrder {
-                    if $0.displayName == $1.displayName {
-                        return $0.keyCode < $1.keyCode
-                    }
-
-                    return $0.displayName < $1.displayName
-                }
-
-                return $0.sortOrder < $1.sortOrder
-            }
+        sortedKeysForDisplay()
             .map(\.shortcutRecorderDisplayName)
             .joined(separator: " + ")
+    }
+
+    private func sortedKeysForDisplay() -> [PhysicalKey] {
+        keys.sorted {
+            if $0.sortOrder == $1.sortOrder {
+                if $0.displayName == $1.displayName {
+                    return $0.keyCode < $1.keyCode
+                }
+
+                return $0.displayName < $1.displayName
+            }
+
+            return $0.sortOrder < $1.sortOrder
+        }
     }
 }
