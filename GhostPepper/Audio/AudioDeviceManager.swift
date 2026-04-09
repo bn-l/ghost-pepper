@@ -11,8 +11,7 @@ struct AudioInputDevice: Identifiable, Equatable, Sendable {
     var isContinuityCandidate: Bool {
         switch transportType {
         case kAudioDeviceTransportTypeContinuityCaptureWired,
-             kAudioDeviceTransportTypeContinuityCaptureWireless,
-             kAudioDeviceTransportTypeContinuityCapture:
+             kAudioDeviceTransportTypeContinuityCaptureWireless:
             return true
         default:
             let loweredName = name.lowercased()
@@ -40,8 +39,6 @@ struct AudioInputDevice: Identifiable, Equatable, Sendable {
             return "continuity-wired"
         case kAudioDeviceTransportTypeContinuityCaptureWireless:
             return "continuity-wireless"
-        case kAudioDeviceTransportTypeContinuityCapture:
-            return "continuity"
         default:
             return "0x" + String(transportType, radix: 16)
         }
@@ -132,27 +129,33 @@ final class AudioDeviceManager: AudioDeviceManaging, @unchecked Sendable {
     func inputDevice(uid: String) -> AudioInputDevice? {
         var mutableUID = uid as CFString
         var deviceID = AudioDeviceID(0)
-        var translation = AudioValueTranslation(
-            mInputData: &mutableUID,
-            mInputDataSize: UInt32(MemoryLayout<CFString>.size),
-            mOutputData: &deviceID,
-            mOutputDataSize: UInt32(MemoryLayout<AudioDeviceID>.size)
-        )
-        var size = UInt32(MemoryLayout<AudioValueTranslation>.size)
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyTranslateUIDToDevice,
             mScope: kAudioObjectPropertyScopeGlobal,
             mElement: kAudioObjectPropertyElementMain
         )
 
-        guard AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &size,
-            &translation
-        ) == noErr else {
+        let status = withUnsafeMutableBytes(of: &mutableUID) { uidBytes in
+            withUnsafeMutableBytes(of: &deviceID) { deviceBytes in
+                var translation = AudioValueTranslation(
+                    mInputData: uidBytes.baseAddress!,
+                    mInputDataSize: UInt32(uidBytes.count),
+                    mOutputData: deviceBytes.baseAddress!,
+                    mOutputDataSize: UInt32(deviceBytes.count)
+                )
+                var size = UInt32(MemoryLayout<AudioValueTranslation>.size)
+                return AudioObjectGetPropertyData(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &address,
+                    0,
+                    nil,
+                    &size,
+                    &translation
+                )
+            }
+        }
+
+        guard status == noErr else {
             return nil
         }
 
