@@ -9,9 +9,11 @@ final class PostPasteLearningCoordinator: @unchecked Sendable {
     typealias Scheduler = @Sendable (TimeInterval, @escaping @Sendable () -> Void) -> Void
     typealias Revisit = @Sendable (PasteSession) async -> PostPasteLearningObservation?
 
+    // Allow a brief post-paste window for users to fix one or two mistaken words manually.
     static let observationWindow: TimeInterval = 15
     static let pollInterval: TimeInterval = 1
     static let quiescencePeriod: TimeInterval = 2
+    // Keep learned replacements intentionally narrow so broad rewrites are ignored.
     private static let maximumReplacementWordCount = 2
     private static let maximumPollCount = Int(observationWindow / pollInterval) + 1
     private static let requiredStablePollCount = Int(quiescencePeriod / pollInterval)
@@ -140,8 +142,13 @@ final class PostPasteLearningCoordinator: @unchecked Sendable {
         }
     }
 
+    @MainActor
     private func store(_ replacement: MisheardReplacement) {
-        correctionStore.appendCommonlyMisheard(replacement)
+        guard correctionStore.appendCommonlyMisheard(replacement) else {
+            logger?.info("learning.replacement_skipped", "Post-paste learning skipped storing an empty or duplicate replacement.")
+            return
+        }
+
         logger?.notice(
             "learning.replacement_learned",
             "Post-paste learning learned a replacement.",
@@ -162,7 +169,7 @@ final class PostPasteLearningCoordinator: @unchecked Sendable {
         let trimmedObserved = observed.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedOriginal.isEmpty,
               !trimmedObserved.isEmpty,
-              trimmedOriginal.caseInsensitiveCompare(trimmedObserved) != .orderedSame else {
+              !stringsMatch(trimmedOriginal, trimmedObserved) else {
             return nil
         }
 
@@ -224,7 +231,12 @@ final class PostPasteLearningCoordinator: @unchecked Sendable {
     }
 
     private static func stringsMatch(_ lhs: String, _ rhs: String) -> Bool {
-        lhs.caseInsensitiveCompare(rhs) == .orderedSame
+        lhs.compare(
+            rhs,
+            options: [.caseInsensitive, .diacriticInsensitive],
+            range: nil,
+            locale: .autoupdatingCurrent
+        ) == .orderedSame
     }
 
     private static func stringsDifferOnlyByPunctuation(_ lhs: String, _ rhs: String) -> Bool {
@@ -322,8 +334,37 @@ enum PostPasteLearningObservationProvider {
         currentWindowReference: FrontmostWindowReference?,
         currentFocusedFrame: CGRect?
     ) -> Bool {
-        _ = currentWindowReference
-        _ = currentFocusedFrame
-        return currentBundleIdentifier == session.frontmostAppBundleIdentifier
+        guard currentBundleIdentifier == session.frontmostAppBundleIdentifier else {
+            return false
+        }
+
+        if let sessionWindowID = session.frontmostWindowID {
+            guard currentWindowReference?.windowID == sessionWindowID else {
+                return false
+            }
+        }
+
+        if let sessionWindowFrame = session.frontmostWindowFrame {
+            guard let currentWindowReference,
+                  framesLikelyMatch(sessionWindowFrame, currentWindowReference.frame) else {
+                return false
+            }
+        }
+
+        if let sessionFocusedFrame = session.focusedElementFrame {
+            guard let currentFocusedFrame,
+                  framesLikelyMatch(sessionFocusedFrame, currentFocusedFrame) else {
+                return false
+            }
+        }
+
+        return true
+    }
+
+    private static func framesLikelyMatch(_ lhs: CGRect, _ rhs: CGRect, tolerance: CGFloat = 1) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) <= tolerance &&
+            abs(lhs.origin.y - rhs.origin.y) <= tolerance &&
+            abs(lhs.size.width - rhs.size.width) <= tolerance &&
+            abs(lhs.size.height - rhs.size.height) <= tolerance
     }
 }

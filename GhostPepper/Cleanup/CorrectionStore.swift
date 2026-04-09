@@ -11,6 +11,7 @@ struct MisheardReplacement: Codable, Equatable, Hashable, Sendable {
     }
 }
 
+@MainActor
 @Observable
 final class CorrectionStore {
     private(set) var preferredTranscriptions: [String]
@@ -60,16 +61,18 @@ final class CorrectionStore {
         persistCommonlyMisheard()
     }
 
-    func appendCommonlyMisheard(_ replacement: MisheardReplacement) {
+    @discardableResult
+    func appendCommonlyMisheard(_ replacement: MisheardReplacement) -> Bool {
         guard !replacement.wrong.isEmpty,
               !replacement.right.isEmpty,
               !commonlyMisheard.contains(replacement) else {
-            return
+            return false
         }
 
         let line = "\(replacement.wrong) -> \(replacement.right)"
         let separator = commonlyMisheardDraft.isEmpty || commonlyMisheardDraft.hasSuffix("\n") ? "" : "\n"
         updateCommonlyMisheard(from: commonlyMisheardDraft + separator + line)
+        return true
     }
 
     private func persistPreferredTranscriptions() {
