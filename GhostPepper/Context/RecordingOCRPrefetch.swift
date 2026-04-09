@@ -21,6 +21,12 @@ final class RecordingOCRPrefetch {
         task = Task {
             let start = Date.now
             let context = await capture(customWords)
+            guard !Task.isCancelled else {
+                return RecordingOCRPrefetchResult(
+                    context: nil,
+                    elapsed: Date.now.timeIntervalSince(start)
+                )
+            }
             return RecordingOCRPrefetchResult(
                 context: context,
                 elapsed: Date.now.timeIntervalSince(start)

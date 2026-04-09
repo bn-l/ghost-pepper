@@ -14,7 +14,7 @@ final class WindowCaptureService: WindowCaptureServing {
             return nil
         }
 
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
             return nil
         }
