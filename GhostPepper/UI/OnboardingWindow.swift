@@ -45,6 +45,7 @@ final class OnboardingWindowController {
     func dismiss() {
         window?.close()
         window = nil
+        NSApp.setActivationPolicy(.accessory)
     }
 }
 
@@ -66,7 +67,7 @@ struct OnboardingView: View {
                 TryItStep(appState: appState, onContinue: { currentStep = 4 })
             case 4:
                 DoneStep(onComplete: {
-                    UserDefaults.standard.set(true, forKey: "onboardingCompleted")
+                    UserDefaults.standard.set(true, forKey: AppStorageKeys.onboardingCompleted)
                     onComplete()
                 })
             default:
@@ -583,10 +584,18 @@ final class TryItController {
     var transcribedText: String?
     var monitorStartFailed = false
 
+    @ObservationIgnored
     private var hotkeyMonitor: HotkeyMonitoring?
+    @ObservationIgnored
     private var audioRecorder: AudioRecorder?
+    @ObservationIgnored
     private var hasAdvanced = false
+    @ObservationIgnored
     private var retryCount = 0
+    @ObservationIgnored
+    private var retryTask: Task<Void, Never>?
+    @ObservationIgnored
+    private var monitorEventTask: Task<Void, Never>?
     private let maxRetries = 5
     private let transcriber: SpeechTranscriber
     private let hotkeyMonitorFactory: ([ChordAction: KeyChord]) -> HotkeyMonitoring
@@ -605,6 +614,8 @@ final class TryItController {
     }
 
     func start(onAdvance: @escaping @MainActor @Sendable () -> Void) {
+        monitorStartFailed = false
+        retryCount = 0
         let recorder = recorderFactory()
         recorder.prewarm()
         self.audioRecorder = recorder
@@ -613,35 +624,41 @@ final class TryItController {
             .pushToTalk: AppState.defaultPushToTalkChord
         ])
         monitor.onRecordingStart = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                do {
-                    try await recorder.startRecording()
-                    self.isRecording = true
-                } catch {
-                    self.monitorStartFailed = true
+            Task { @MainActor [weak self] in
+                self?.enqueueMonitorEvent { [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await recorder.startRecording()
+                        self.monitorStartFailed = false
+                        self.isRecording = true
+                    } catch {
+                        self.monitorStartFailed = true
+                    }
                 }
             }
         }
         monitor.onRecordingStop = { [weak self] in
-            Task { @MainActor in
-                guard let self else { return }
-                self.isRecording = false
-                self.isTranscribing = true
-                let buffer = await recorder.stopRecording()
-                let text = await self.transcriber.transcribe(audioBuffer: buffer)
-                self.isTranscribing = false
-                if let text {
-                    self.transcribedText = text
-                    Task { @MainActor [weak self] in
-                        try? await Task.sleep(for: .seconds(2))
-                        self?.advance(onAdvance: onAdvance)
+            Task { @MainActor [weak self] in
+                self?.enqueueMonitorEvent { [weak self] in
+                    guard let self else { return }
+                    self.isRecording = false
+                    self.isTranscribing = true
+                    let buffer = await recorder.stopRecording()
+                    let text = await self.transcriber.transcribe(audioBuffer: buffer)
+                    self.isTranscribing = false
+                    if let text {
+                        self.transcribedText = text
+                        Task { @MainActor [weak self] in
+                            try? await Task.sleep(for: .seconds(2))
+                            self?.advance(onAdvance: onAdvance)
+                        }
                     }
                 }
             }
         }
 
         if monitor.start() {
+            monitorStartFailed = false
             self.hotkeyMonitor = monitor
         } else {
             retryStartMonitor(monitor: monitor)
@@ -656,6 +673,12 @@ final class TryItController {
     }
 
     func cleanup() {
+        retryTask?.cancel()
+        retryTask = nil
+        monitorEventTask?.cancel()
+        monitorEventTask = nil
+        hotkeyMonitor?.onRecordingStart = nil
+        hotkeyMonitor?.onRecordingStop = nil
         hotkeyMonitor?.stop()
         hotkeyMonitor = nil
         audioRecorder = nil
@@ -667,13 +690,27 @@ final class TryItController {
             return
         }
         retryCount += 1
-        Task { @MainActor [weak self] in
+        retryTask?.cancel()
+        retryTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))
             if monitor.start() {
+                self?.monitorStartFailed = false
                 self?.hotkeyMonitor = monitor
             } else {
                 self?.retryStartMonitor(monitor: monitor)
             }
+        }
+    }
+
+    private func enqueueMonitorEvent(_ operation: @escaping @MainActor () async -> Void) {
+        let previousTask = monitorEventTask
+        monitorEventTask = Task { @MainActor in
+            _ = await previousTask?.result
+            guard !Task.isCancelled else {
+                return
+            }
+
+            await operation()
         }
     }
 }
